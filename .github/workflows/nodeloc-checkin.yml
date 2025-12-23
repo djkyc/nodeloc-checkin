@@ -3,30 +3,33 @@ name: NodeLoc Checkin
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "10 1 * * *"  # UTC 时间，想改再改
+    # GitHub Actions 使用 UTC 时间
+    # 示例：UTC 01:10（你需要的话我可以帮你换算成本地时间）
+    - cron: "10 1 * * *"
 
 jobs:
   checkin:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
+      # 1. 拉取仓库代码
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. 安装 Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # 3. 安装运行所需依赖（不需要 package.json）
       - name: Install deps
         run: npm i axios tough-cookie axios-cookiejar-support
 
-      - name: Run checkin
+      # 4. 运行签到脚本（只用 Cookie）
+      - name: Run NodeLoc checkin
         env:
-          NODELOC_USERNAME: ${{ secrets.NODELOC_USERNAME }}
-          NODELOC_PASSWORD: ${{ secrets.NODELOC_PASSWORD }}
-          NODELOC_TIMEZONE: ${{ secrets.NODELOC_TIMEZONE }}
           NODELOC_COOKIE: ${{ secrets.NODELOC_COOKIE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
