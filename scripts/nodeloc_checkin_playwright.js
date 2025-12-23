@@ -3,9 +3,10 @@ const axios = require("axios");
 
 const BASE = "https://www.nodeloc.com";
 
+// 必需：已有 Cookie
 const NODELOC_COOKIE = (process.env.NODELOC_COOKIE || "").trim();
-const NODELOC_EMAIL = (process.env.NODELOC_EMAIL || "").trim();
 
+// 统一邮箱变量：登录 + TG 显示
 const LOGIN_EMAIL = (process.env.NODELOC_LOGIN_EMAIL || "").trim();
 const LOGIN_PASSWORD = (process.env.NODELOC_LOGIN_PASSWORD || "").trim();
 
@@ -21,9 +22,7 @@ async function sendTG(message) {
       chat_id: TG_USER_ID,
       text: message,
     });
-  } catch (e) {
-    console.error("TG 发送失败：", e.message);
-  }
+  } catch {}
 }
 
 /* ================== 工具函数 ================== */
@@ -44,6 +43,7 @@ function parseCookies(cookieStr) {
     });
 }
 
+// 邮箱打码：保留前 2 位 + 域名
 function maskEmail(email) {
   if (!email.includes("@")) return "***";
   const [u, d] = email.split("@");
@@ -92,7 +92,6 @@ async function reloginAndRefresh(page) {
   await page.fill('input[name="password"]', LOGIN_PASSWORD);
   await page.click('button[type="submit"]');
 
-  // 若有验证码/2FA，这里会超时
   await page.waitForSelector("img.avatar", { timeout: 30000 });
 
   const cookies = await page.context().cookies(BASE);
@@ -147,7 +146,7 @@ async function reloginAndRefresh(page) {
       }
 
       const timeStr = formatBeijingTime();
-      const accountStr = NODELOC_EMAIL ? maskEmail(NODELOC_EMAIL) : "（邮箱未配置）";
+      const accountStr = LOGIN_EMAIL ? maskEmail(LOGIN_EMAIL) : "（邮箱未配置）";
 
       let msg =
         "♻️ NodeLoc Cookie 已自动刷新\n" +
@@ -168,8 +167,8 @@ async function reloginAndRefresh(page) {
     }
 
     const timeStr = formatBeijingTime();
-    const displayAccount = NODELOC_EMAIL
-      ? maskEmail(NODELOC_EMAIL)
+    const displayAccount = LOGIN_EMAIL
+      ? maskEmail(LOGIN_EMAIL)
       : "（邮箱未配置）";
 
     const alreadySigned = await page.$(".d-icon-calendar-check");
