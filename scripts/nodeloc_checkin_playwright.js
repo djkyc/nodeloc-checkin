@@ -3,11 +3,9 @@ const axios = require("axios");
 
 const BASE = "https://www.nodeloc.com";
 
-// 必需：登录后的 Cookie
+// 必需
 const NODELOC_COOKIE = (process.env.NODELOC_COOKIE || "").trim();
-
-// 可选：仅用于 TG 展示的邮箱（打码显示）
-const DISPLAY_EMAIL = (process.env.NODELOC_EMAIL || "").trim();
+const NODELOC_EMAIL = (process.env.NODELOC_EMAIL || "").trim();
 
 /* ================== TG 推送 ================== */
 async function sendTG(message) {
@@ -42,39 +40,30 @@ function parseCookies(cookieStr) {
     });
 }
 
-/* ================== 打码逻辑 ================== */
+/* ================== 邮箱打码（修正版） ================== */
 function maskEmail(email) {
-  if (!email || !email.includes("@")) return "";
+  if (!email.includes("@")) return "***";
   const [user, domain] = email.split("@");
-  if (user.length <= 2) return user[0] + "*@" + domain;
-  return (
-    user.slice(0, 2) +
-    "*".repeat(Math.max(1, user.length - 2)) +
-    "@" +
-    domain
-  );
+  if (user.length <= 1) return "*@" + domain;
+  if (user.length === 2) return user[0] + "*@" + domain;
+  return user.slice(0, 2) + "*".repeat(user.length - 2) + "@" + domain;
 }
 
-function maskName(name) {
-  if (!name) return "***";
-  if (name.length === 1) return "*";
-  if (name.length === 2) return name[0] + "*";
-  return name[0] + "*".repeat(name.length - 2) + name[name.length - 1];
-}
-
-/* ================== 时间格式 ================== */
-function formatTime(date = new Date()) {
+/* ================== 北京时间 ================== */
+function formatBeijingTime(date = new Date()) {
+  // UTC+8
+  const bj = new Date(date.getTime() + 8 * 60 * 60 * 1000);
   const pad = n => String(n).padStart(2, "0");
   return (
-    date.getFullYear() +
+    bj.getUTCFullYear() +
     ":" +
-    pad(date.getMonth() + 1) +
+    pad(bj.getUTCMonth() + 1) +
     ":" +
-    pad(date.getDate()) +
+    pad(bj.getUTCDate()) +
     ":" +
-    pad(date.getHours()) +
+    pad(bj.getUTCHours()) +
     ":" +
-    pad(date.getMinutes())
+    pad(bj.getUTCMinutes())
   );
 }
 
@@ -84,6 +73,14 @@ function formatTime(date = new Date()) {
     await sendTG("❌ NodeLoc Cookie 缺失，请重新登录并更新");
     process.exit(1);
   }
+
+  if (!NODELOC_EMAIL) {
+    await sendTG("❌ NodeLoc 未设置邮箱显示（NODELOC_EMAIL），请补充后再运行");
+    process.exit(1);
+  }
+
+  const displayAccount = maskEmail(NODELOC_EMAIL);
+  const timeStr = formatBeijingTime();
 
   const browser = await chromium.launch({
     headless: true,
@@ -98,47 +95,27 @@ function formatTime(date = new Date()) {
   const page = await context.newPage();
 
   try {
-    // 打开首页
     await page.goto(BASE, {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
 
-    // 等 header 就绪
     await page.waitForSelector("header", { timeout: 20000 });
     await page.waitForTimeout(3000);
 
-    // 检测是否登录（签到图标是否存在）
+    // Cookie 有效性检测
     const checkinIcon = await page.$(
       "li.header-dropdown-toggle.checkin-icon"
     );
 
     if (!checkinIcon) {
-      await sendTG("❌ NodeLoc Cookie 已失效，请重新无痕登录并更新");
+      await sendTG(
+        `❌ NodeLoc Cookie 已失效\n账号：${displayAccount}\n时间：${timeStr}`
+      );
       process.exit(1);
     }
 
-    // 读取登录后的账号身份（username）
-    const rawAccount = await page.evaluate(() => {
-      const img = document.querySelector("img.avatar");
-      return (
-        img?.getAttribute("alt") ||
-        img?.getAttribute("title") ||
-        ""
-      );
-    });
-
-    // 账号展示逻辑：邮箱优先，否则 username
-    let displayAccount = "";
-    if (DISPLAY_EMAIL) {
-      displayAccount = maskEmail(DISPLAY_EMAIL);
-    } else {
-      displayAccount = maskName(rawAccount);
-    }
-
-    const timeStr = formatTime();
-
-    // 判断是否已签到
+    // 已签到
     const alreadySigned = await page.$(".d-icon-calendar-check");
     if (alreadySigned) {
       await sendTG(
@@ -149,7 +126,7 @@ function formatTime(date = new Date()) {
       process.exit(0);
     }
 
-    // 未签到 → 点击签到
+    // 未签到 → 点击
     const checkinBtn = await page.$("button.checkin-button");
     if (!checkinBtn) {
       await sendTG(
@@ -170,7 +147,11 @@ function formatTime(date = new Date()) {
     );
 
   } catch (err) {
-    await sendTG(`❌ NodeLoc 签到异常\n${err.message}`);
+    await sendTG(
+      `❌ NodeLoc 签到异常\n` +
+      `账号：${displayAccount}\n` +
+      `错误：${err.message}`
+    );
     process.exit(1);
   } finally {
     await browser.close();
