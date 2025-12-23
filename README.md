@@ -40,7 +40,7 @@ safe（默认，摘要）/full（明文） # 选后面显示
 
 
 
-```
+
 📌最终 TG 效果示例
 
 有设置 NODELOC_EMAIL
@@ -51,7 +51,34 @@ safe（默认，摘要）/full（明文） # 选后面显示
 ```
 
 没设置 NODELOC_EMAIL
+
 ```
 🟢 NodeLoc 今日已签到
 账号：d***c
 时间：2025:12:23:13:35
+```
+
+🧾 TG 提示效果示例
+默认（安全模式）
+
+```
+♻️ NodeLoc Cookie 已自动刷新
+账号：56*****@qq.com
+时间：2025:12:23:14:10
+
+Cookie 摘要：
+_forum_session=3mW…d9a
+_t=5JFA…xZ
+请到 Actions 日志复制完整 Cookie 更新 Secrets
+```
+
+明文模式（NODELOC_COOKIE_TG_MODE=full）
+
+```
+♻️ NodeLoc Cookie 已自动刷新
+账号：56*****@qq.com
+时间：2025:12:23:14:10
+
+NEW NODELOC_COOKIE：
+_forum_session=...; _t=...; ...
+```
