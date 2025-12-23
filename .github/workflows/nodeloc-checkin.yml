@@ -1,4 +1,4 @@
-name: NodeLoc Checkin (Playwright)
+name: NodeLoc 签到
 
 on:
   workflow_dispatch: {}
