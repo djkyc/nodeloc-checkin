@@ -1,12 +1,45 @@
 仓库 Settings → Secrets and variables → Actions：
+
+🔐 需要的环境变量（最终确认）
+必需 推荐（仅用于 TG 展示）
 ```
-NODELOC_EMAIL（可选）
+NODELOC_COOKIE
 
-NODELOC_COOKIE（必需）
 
-TG_BOT_TOKEN（可选）
+```
+（真实邮箱，脚本自动打码）
 
-TG_USER_ID（可选）
+```
+NODELOC_EMAIL
+```
+可选（用于自动刷新 Cookie）
+```
+NODELOC_LOGIN_EMAIL
+```
+```
+NODELOC_LOGIN_PASSWORD
+```
+TG消息接收签到情况 (可选)
+```
+TG_BOT_TOKEN
+```
+```
+TG_USER_ID
+```
+
+Cookie TG 提醒模式（可选）
+
+```
+NODELOC_COOKIE_TG_MODE
+```
+safe（默认，摘要）/full（明文） # 选后面显示
+
+
+```
+
+
+
+
 ```
 📌最终 TG 效果示例
 
