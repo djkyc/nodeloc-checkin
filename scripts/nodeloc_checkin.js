@@ -7,7 +7,7 @@
  * 环境变量：
  *   NODELOC_USERNAME=你的用户名或邮箱
  *   NODELOC_PASSWORD=你的密码
- *   NODELOC_TIMEZONE=America/Los_Angeles   (可选；默认这个)
+ *   NODELOC_TIMEZONE=America/Los_Angeles   (可选；默认 America/Los_Angeles)
  *
  * 可选 Telegram 推送：
  *   TG_BOT_TOKEN=xxxxx
@@ -41,7 +41,7 @@ async function sendTG(message) {
     });
     console.log("✅ TG 推送成功");
   } catch (err) {
-    console.log("❌ TG 推送失败：", err.message);
+    console.log("❌ TG 推送失败：", err?.message || err);
   }
 }
 
@@ -56,10 +56,20 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function safeText(data) {
+  if (data == null) return "";
+  if (typeof data === "string") return data;
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+}
+
 // ===== 主逻辑 =====
 async function main() {
   if (!USERNAME || !PASSWORD) {
-    console.log("⚠️ 请设置 NODELOC_USERNAME 和 NODELOC_PASSWORD");
+    console.log("⚠️ 缺少环境变量：NODELOC_USERNAME / NODELOC_PASSWORD");
     process.exit(1);
   }
 
@@ -77,8 +87,8 @@ async function main() {
     })
   );
 
-  // 随机延迟，避免集中请求
-  await sleep(Math.random() * 2000 + 1000);
+  // 随机延迟，降低触发风控概率
+  await sleep(Math.random() * 1500 + 800);
 
   try {
     // 1) 获取 CSRF
@@ -90,16 +100,20 @@ async function main() {
 
     // 3) 获取 nonce（用于签到）
     const nonce = await fetchNonce(client);
-    if (!nonce) throw new Error("获取 nonce 失败");
+    if (!nonce) throw new Error("获取 nonce 失败（可能未登录成功或页面结构变化）");
 
     // 4) 签到
     const result = await checkin(client, csrf, nonce);
 
-    const msg = `✅ NodeLoc 签到结果：\n\`\`\`\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+    const msg =
+      "✅ NodeLoc 签到结果：\n" +
+      "```json\n" +
+      JSON.stringify(result, null, 2) +
+      "\n```";
     console.log(msg);
     await sendTG(msg);
   } catch (err) {
-    const msg = `❌ NodeLoc 签到失败：${err.message}`;
+    const msg = `❌ NodeLoc 签到失败：${err?.message || err}`;
     console.log(msg);
     await sendTG(msg);
     process.exit(1);
@@ -114,19 +128,18 @@ async function fetchCsrf(client) {
       Referer: `${BASE}/login`,
       "X-Requested-With": "XMLHttpRequest",
       "Discourse-Present": "true",
-      // "X-CSRF-Token": "undefined", // HAR 里是 undefined，这里不发也行
+      // 有些抓包里会看到 "X-CSRF-Token: undefined"，这里不发也能拿到 csrf
     },
   });
 
   // 正常是 { csrf: "..." }
   const csrf = res?.data?.csrf;
-  if (!csrf) {
-    // 兜底：如果不是 JSON，就从文本里正则提取
-    const text = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
-    const m = text.match(/"csrf"\s*:\s*"([^"]+)"/);
-    return m ? m[1] : null;
-  }
-  return csrf;
+  if (csrf) return csrf;
+
+  // 兜底：如果不是 JSON，就从文本里提取
+  const text = safeText(res.data);
+  const m = text.match(/"csrf"\s*:\s*"([^"]+)"/);
+  return m ? m[1] : null;
 }
 
 // ===== 2) POST /session 登录 =====
@@ -151,16 +164,30 @@ async function login(client, csrf, username, password, timezone) {
   });
 
   if (res.status !== 200) {
-    throw new Error(`登录请求失败，HTTP ${res.status}`);
+    const body = safeText(res.data);
+    throw new Error(`登录请求失败，HTTP ${res.status}，响应：${body.slice(0, 200)}`);
   }
 
-  // 登录失败时，Discourse 往往会返回包含错误信息的内容
-  const bodyText = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
-  if (bodyText.includes("用户名") && bodyText.includes("密码") && bodyText.includes("不正确")) {
-    throw new Error("用户名/邮箱或密码不正确");
+  const body = safeText(res.data);
+
+  // 常见失败提示兜底（不同语言/站点定制可能不一样）
+  if (
+    body.includes("不正确") ||
+    body.toLowerCase().includes("incorrect") ||
+    body.toLowerCase().includes("invalid")
+  ) {
+    throw new Error("登录失败：用户名/邮箱或密码不正确（或站点返回 invalid/incorrect）");
   }
-  if (bodyText.toLowerCase().includes("second_factor") || bodyText.includes("验证码") || bodyText.includes("二次")) {
-    throw new Error("账号触发了二次验证/验证码，脚本不支持绕过（需要你在网页端完成验证后再用 Cookie 方案）");
+
+  // 二次验证/验证码：这里不做绕过，只提示
+  if (
+    body.toLowerCase().includes("second_factor") ||
+    body.includes("二次") ||
+    body.includes("验证码") ||
+    body.toLowerCase().includes("otp") ||
+    body.toLowerCase().includes("2fa")
+  ) {
+    throw new Error("登录触发二次验证/验证码：该脚本不支持绕过（只能人工验证或改用 Cookie 方案）");
   }
 
   return true;
@@ -200,7 +227,12 @@ async function checkin(client, csrf, nonce) {
     },
   });
 
-  // 返回一般是 JSON（也可能是文本）
+  // 如果返回不是 2xx，也把内容抛出来方便排查
+  if (res.status < 200 || res.status >= 300) {
+    const body = safeText(res.data);
+    throw new Error(`签到请求失败，HTTP ${res.status}，响应：${body.slice(0, 300)}`);
+  }
+
   return res.data;
 }
 
