@@ -1,13 +1,3 @@
-/**
- * NodeLoc Playwright 自动签到（真浏览器）
- *
- * 必需环境变量：
- *   NODELOC_COOKIE = 浏览器登录后的 Cookie（整串）
- *
- * 可选：
- *   TG_BOT_TOKEN / TG_USER_ID
- */
-
 const { chromium } = require("playwright");
 const axios = require("axios");
 
@@ -29,7 +19,7 @@ async function sendTG(message) {
 function parseCookies(cookieStr) {
   return cookieStr
     .split(";")
-    .map(c => c.trim())
+    .map(s => s.trim())
     .filter(Boolean)
     .map(c => {
       const i = c.indexOf("=");
@@ -38,8 +28,8 @@ function parseCookies(cookieStr) {
         value: c.slice(i + 1),
         domain: "www.nodeloc.com",
         path: "/",
-        httpOnly: false,
         secure: true,
+        httpOnly: false,
       };
     });
 }
@@ -55,46 +45,52 @@ function parseCookies(cookieStr) {
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
 
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 800 },
+  });
 
-  // 写入 Cookie
   await context.addCookies(parseCookies(NODELOC_COOKIE));
 
   const page = await context.newPage();
 
   try {
-    // 打开首页（必须）
-    await page.goto(BASE, { waitUntil: "networkidle" });
+    // ✅ 关键修复点
+    await page.goto(BASE, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
 
-    // 等页面加载完成
-    await page.waitForTimeout(3000);
+    // 手动等待页面稳定（非常重要）
+    await page.waitForTimeout(5000);
 
-    // 判断是否已登录
-    const loggedIn = await page.locator("img.avatar").first().isVisible().catch(() => false);
+    // 校验登录态（头像是否存在）
+    const loggedIn = await page
+      .locator("img.avatar")
+      .first()
+      .isVisible()
+      .catch(() => false);
+
     if (!loggedIn) {
-      throw new Error("Cookie 无效：页面未显示登录态");
+      throw new Error("Cookie 已失效：页面未显示登录态");
     }
 
-    // 点击签到按钮
-    // NodeLoc 签到一般在页面右上角/用户菜单
-    // 直接执行页面 JS（最稳）
-    const result = await page.evaluate(async () => {
+    // 点击签到按钮（执行页面 JS）
+    const clicked = await page.evaluate(() => {
       const btn =
         document.querySelector('[data-action="checkin"]') ||
         [...document.querySelectorAll("button, a")].find(el =>
           el.innerText.includes("签到")
         );
 
-      if (!btn) return { ok: false, msg: "未找到签到按钮（可能已签到）" };
-
+      if (!btn) return false;
       btn.click();
-      return { ok: true };
+      return true;
     });
 
     await page.waitForTimeout(3000);
 
-    if (!result.ok) {
-      throw new Error(result.msg);
+    if (!clicked) {
+      throw new Error("未找到签到按钮（可能已签到或页面结构变化）");
     }
 
     console.log("✅ NodeLoc 签到成功（Playwright）");
