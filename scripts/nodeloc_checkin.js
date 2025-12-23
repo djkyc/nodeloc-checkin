@@ -1,13 +1,15 @@
 /**
- * NodeLoc 账号密码登录 + 签到（Discourse）
+ * NodeLoc Cookie(优先) 或 账号密码 登录 + 签到（Discourse）
  *
  * 依赖：
  *   npm i axios tough-cookie axios-cookiejar-support
  *
- * 环境变量：
- *   NODELOC_USERNAME=你的用户名或邮箱
- *   NODELOC_PASSWORD=你的密码
- *   NODELOC_TIMEZONE=America/Los_Angeles   (可选；默认 America/Los_Angeles)
+ * 环境变量（二选一即可）：
+ *   方式1（推荐）：NODELOC_COOKIE=浏览器 Network 里 Request Headers 的 Cookie: 后面那一整串
+ *   方式2：NODELOC_USERNAME=账号/邮箱  NODELOC_PASSWORD=密码
+ *
+ * 可选：
+ *   NODELOC_TIMEZONE=America/Los_Angeles
  *
  * 可选 Telegram 推送：
  *   TG_BOT_TOKEN=xxxxx
@@ -26,6 +28,7 @@ const UA =
 const USERNAME = process.env.NODELOC_USERNAME;
 const PASSWORD = process.env.NODELOC_PASSWORD;
 const TIMEZONE = process.env.NODELOC_TIMEZONE || "America/Los_Angeles";
+const NODELOC_COOKIE = process.env.NODELOC_COOKIE;
 
 // ===== TG 推送（可选）=====
 async function sendTG(message) {
@@ -66,60 +69,6 @@ function safeText(data) {
   }
 }
 
-// ===== 主逻辑 =====
-async function main() {
-  if (!USERNAME || !PASSWORD) {
-    console.log("⚠️ 缺少环境变量：NODELOC_USERNAME / NODELOC_PASSWORD");
-    process.exit(1);
-  }
-
-  // 让 axios 自动维护 Cookie（登录态）
-  const jar = new CookieJar();
-  const client = wrapper(
-    axios.create({
-      jar,
-      withCredentials: true,
-      timeout: 30000,
-      validateStatus: (s) => s >= 200 && s < 500, // 让我们能读到错误响应内容
-      headers: {
-        "User-Agent": UA,
-      },
-    })
-  );
-
-  // 随机延迟，降低触发风控概率
-  await sleep(Math.random() * 1500 + 800);
-
-  try {
-    // 1) 获取 CSRF
-    const csrf = await fetchCsrf(client);
-    if (!csrf) throw new Error("获取 CSRF 失败");
-
-    // 2) 登录（账号密码）
-    await login(client, csrf, USERNAME, PASSWORD, TIMEZONE);
-
-    // 3) 获取 nonce（用于签到）
-    const nonce = await fetchNonce(client);
-    if (!nonce) throw new Error("获取 nonce 失败（可能未登录成功或页面结构变化）");
-
-    // 4) 签到
-    const result = await checkin(client, csrf, nonce);
-
-    const msg =
-      "✅ NodeLoc 签到结果：\n" +
-      "```json\n" +
-      JSON.stringify(result, null, 2) +
-      "\n```";
-    console.log(msg);
-    await sendTG(msg);
-  } catch (err) {
-    const msg = `❌ NodeLoc 签到失败：${err?.message || err}`;
-    console.log(msg);
-    await sendTG(msg);
-    process.exit(1);
-  }
-}
-
 // ===== 1) GET /session/csrf =====
 async function fetchCsrf(client) {
   const res = await client.get(`${BASE}/session/csrf`, {
@@ -128,15 +77,12 @@ async function fetchCsrf(client) {
       Referer: `${BASE}/login`,
       "X-Requested-With": "XMLHttpRequest",
       "Discourse-Present": "true",
-      // 有些抓包里会看到 "X-CSRF-Token: undefined"，这里不发也能拿到 csrf
     },
   });
 
-  // 正常是 { csrf: "..." }
   const csrf = res?.data?.csrf;
   if (csrf) return csrf;
 
-  // 兜底：如果不是 JSON，就从文本里提取
   const text = safeText(res.data);
   const m = text.match(/"csrf"\s*:\s*"([^"]+)"/);
   return m ? m[1] : null;
@@ -170,7 +116,6 @@ async function login(client, csrf, username, password, timezone) {
 
   const body = safeText(res.data);
 
-  // 常见失败提示兜底（不同语言/站点定制可能不一样）
   if (
     body.includes("不正确") ||
     body.toLowerCase().includes("incorrect") ||
@@ -179,7 +124,7 @@ async function login(client, csrf, username, password, timezone) {
     throw new Error("登录失败：用户名/邮箱或密码不正确（或站点返回 invalid/incorrect）");
   }
 
-  // 二次验证/验证码：这里不做绕过，只提示
+  // 二次验证/验证码：不处理（提示用户改用 cookie）
   if (
     body.toLowerCase().includes("second_factor") ||
     body.includes("二次") ||
@@ -187,7 +132,7 @@ async function login(client, csrf, username, password, timezone) {
     body.toLowerCase().includes("otp") ||
     body.toLowerCase().includes("2fa")
   ) {
-    throw new Error("登录触发二次验证/验证码：该脚本不支持绕过（只能人工验证或改用 Cookie 方案）");
+    throw new Error("登录触发二次验证/验证码：请改用 NODELOC_COOKIE（一次人工登录后长期可用）");
   }
 
   return true;
@@ -198,7 +143,7 @@ async function fetchNonce(client) {
   const res = await client.get(`${BASE}/`, {
     headers: {
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      Referer: `${BASE}/login`,
+      Referer: `${BASE}/`,
     },
   });
 
@@ -209,7 +154,7 @@ async function fetchNonce(client) {
 
 // ===== 4) POST /checkin =====
 async function checkin(client, csrf, nonce) {
-  const timestamp = Date.now(); // 13位毫秒时间戳
+  const timestamp = Date.now();
   const data = toFormUrlEncoded({ nonce, timestamp });
 
   const res = await client.post(`${BASE}/checkin`, data, {
@@ -227,13 +172,72 @@ async function checkin(client, csrf, nonce) {
     },
   });
 
-  // 如果返回不是 2xx，也把内容抛出来方便排查
   if (res.status < 200 || res.status >= 300) {
     const body = safeText(res.data);
     throw new Error(`签到请求失败，HTTP ${res.status}，响应：${body.slice(0, 300)}`);
   }
 
   return res.data;
+}
+
+// ===== 主逻辑 =====
+async function main() {
+  // 如果没有 cookie，又没有账号密码，就直接报错
+  if (!NODELOC_COOKIE && (!USERNAME || !PASSWORD)) {
+    console.log("⚠️ 请设置 NODELOC_COOKIE（推荐），或设置 NODELOC_USERNAME / NODELOC_PASSWORD");
+    process.exit(1);
+  }
+
+  // 让 axios 自动维护 Cookie（登录态）
+  const jar = new CookieJar();
+  const client = wrapper(
+    axios.create({
+      jar,
+      withCredentials: true,
+      timeout: 30000,
+      validateStatus: (s) => s >= 200 && s < 500,
+      headers: { "User-Agent": UA },
+    })
+  );
+
+  // 若提供了 NODELOC_COOKIE：写入 cookie jar（跳过账号密码登录）
+  if (NODELOC_COOKIE) {
+    NODELOC_COOKIE.split(";")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((c) => jar.setCookieSync(c, BASE));
+  }
+
+  // 随机延迟
+  await sleep(Math.random() * 1500 + 800);
+
+  try {
+    const csrf = await fetchCsrf(client);
+    if (!csrf) throw new Error("获取 CSRF 失败");
+
+    // 没 cookie 才登录
+    if (!NODELOC_COOKIE) {
+      await login(client, csrf, USERNAME, PASSWORD, TIMEZONE);
+    }
+
+    const nonce = await fetchNonce(client);
+    if (!nonce) throw new Error("获取 nonce 失败（Cookie 可能失效/未登录/页面结构变化）");
+
+    const result = await checkin(client, csrf, nonce);
+
+    const msg =
+      "✅ NodeLoc 签到结果：\n" +
+      "```json\n" +
+      JSON.stringify(result, null, 2) +
+      "\n```";
+    console.log(msg);
+    await sendTG(msg);
+  } catch (err) {
+    const msg = `❌ NodeLoc 签到失败：${err?.message || err}`;
+    console.log(msg);
+    await sendTG(msg);
+    process.exit(1);
+  }
 }
 
 main();
