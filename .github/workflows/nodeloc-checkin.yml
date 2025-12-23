@@ -3,12 +3,7 @@ name: NodeLoc Checkin
 on:
   workflow_dispatch: {}
   schedule:
-    # cron 是 UTC。示例：UTC 01:10
-    - cron: "10 1 * * *"
-
-concurrency:
-  group: nodeloc-checkin
-  cancel-in-progress: true
+    - cron: "10 1 * * *"  # UTC 时间，想改再改
 
 jobs:
   checkin:
@@ -23,10 +18,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
 
-      - name: Install deps (locked)
-        run: npm ci
+      - name: Install deps
+        run: npm i axios tough-cookie axios-cookiejar-support
 
       - name: Run checkin
         env:
@@ -35,4 +29,4 @@ jobs:
           NODELOC_TIMEZONE: ${{ secrets.NODELOC_TIMEZONE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
-        run: npm run checkin
+        run: node scripts/nodeloc_checkin.js
