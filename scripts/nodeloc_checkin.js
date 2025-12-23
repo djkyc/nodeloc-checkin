@@ -1,19 +1,17 @@
 /**
- * NodeLoc Cookie(优先) 或 账号密码 登录 + 签到（Discourse）
+ * NodeLoc 签到（优先 Cookie；可选账号密码登录）
  *
  * 依赖：
  *   npm i axios tough-cookie axios-cookiejar-support
  *
- * 环境变量（二选一即可）：
- *   方式1（推荐）：NODELOC_COOKIE=浏览器 Network 里 Request Headers 的 Cookie: 后面那一整串
- *   方式2：NODELOC_USERNAME=账号/邮箱  NODELOC_PASSWORD=密码
+ * 环境变量：
+ *   推荐：NODELOC_COOKIE=浏览器 Request Headers 里的 Cookie 后面整串（不要带 "Cookie:"）
  *
- * 可选：
- *   NODELOC_TIMEZONE=America/Los_Angeles
+ *   可选：NODELOC_USERNAME / NODELOC_PASSWORD（不推荐，容易触发二次验证）
+ *   可选：NODELOC_TIMEZONE=America/Los_Angeles
  *
  * 可选 Telegram 推送：
- *   TG_BOT_TOKEN=xxxxx
- *   TG_USER_ID=123456789
+ *   TG_BOT_TOKEN / TG_USER_ID
  */
 
 const axios = require("axios");
@@ -24,10 +22,10 @@ const BASE = "https://www.nodeloc.com";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
+const NODELOC_COOKIE = (process.env.NODELOC_COOKIE || "").trim();
 const USERNAME = process.env.NODELOC_USERNAME;
 const PASSWORD = process.env.NODELOC_PASSWORD;
 const TIMEZONE = process.env.NODELOC_TIMEZONE || "America/Los_Angeles";
-const NODELOC_COOKIE = process.env.NODELOC_COOKIE;
 
 async function sendTG(message) {
   const TG_TOKEN = process.env.TG_BOT_TOKEN;
@@ -50,7 +48,6 @@ function toFormUrlEncoded(obj) {
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v ?? "")}`)
     .join("&");
 }
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function safeText(data) {
@@ -63,25 +60,28 @@ function safeText(data) {
   }
 }
 
-// GET /session/csrf
-async function fetchCsrf(client, referer = `${BASE}/login`) {
-  const res = await client.get(`${BASE}/session/csrf`, {
+/**
+ * 关键：从页面 meta 取 csrf-token（比 /session/csrf 更贴合 NodeLoc 的签到实现）
+ */
+async function fetchMetaCsrf(client) {
+  const res = await client.get(`${BASE}/latest`, {
     headers: {
-      Accept: "application/json, text/javascript, */*; q=0.01",
-      Referer: referer,
-      "X-Requested-With": "XMLHttpRequest",
-      "Discourse-Present": "true",
+      "User-Agent": UA,
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      Referer: `${BASE}/latest`,
+      ...(NODELOC_COOKIE ? { Cookie: NODELOC_COOKIE } : {}),
     },
   });
 
-  if (res?.data?.csrf) return res.data.csrf;
-
-  const text = safeText(res.data);
-  const m = text.match(/"csrf"\s*:\s*"([^"]+)"/);
+  const html = typeof res.data === "string" ? res.data : "";
+  const m = html.match(/name="csrf-token"\s+content="([^"]+)"/);
   return m ? m[1] : null;
 }
 
-// POST /session 登录
+/**
+ * 可选：账号密码登录（不推荐，容易触发二次验证）
+ * 登录成功后再 fetchMetaCsrf -> checkin
+ */
 async function login(client, csrf, username, password, timezone) {
   const data = toFormUrlEncoded({
     login: username,
@@ -92,6 +92,7 @@ async function login(client, csrf, username, password, timezone) {
 
   const res = await client.post(`${BASE}/session`, data, {
     headers: {
+      "User-Agent": UA,
       Accept: "*/*",
       Referer: `${BASE}/login`,
       Origin: BASE,
@@ -103,90 +104,59 @@ async function login(client, csrf, username, password, timezone) {
   });
 
   if (res.status !== 200) {
-    throw new Error(`登录请求失败，HTTP ${res.status}，响应：${safeText(res.data).slice(0, 200)}`);
+    throw new Error(`登录请求失败，HTTP ${res.status}：${safeText(res.data).slice(0, 200)}`);
   }
 
-  const body = safeText(res.data);
-  if (
-    body.includes("不正确") ||
-    body.toLowerCase().includes("incorrect") ||
-    body.toLowerCase().includes("invalid")
-  ) {
-    throw new Error("登录失败：用户名/邮箱或密码不正确");
-  }
-
-  if (
-    body.toLowerCase().includes("second_factor") ||
-    body.includes("二次") ||
-    body.includes("验证码") ||
-    body.toLowerCase().includes("otp") ||
-    body.toLowerCase().includes("2fa")
-  ) {
-    throw new Error("登录触发二次验证/验证码：建议用 NODELOC_COOKIE");
+  const body = safeText(res.data).toLowerCase();
+  if (body.includes("second_factor") || body.includes("otp") || body.includes("2fa") || body.includes("验证码")) {
+    throw new Error("登录触发二次验证/验证码：请改用 NODELOC_COOKIE（先网页登录一次）");
   }
 }
 
-// GET / 抓 nonce
-async function fetchNonce(client) {
-  const res = await client.get(`${BASE}/`, {
+/**
+ * 登录流程需要一个 csrf（这里用 /session/csrf 取即可）
+ */
+async function fetchSessionCsrf(client) {
+  const res = await client.get(`${BASE}/session/csrf`, {
     headers: {
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      Referer: `${BASE}/`,
-    },
-  });
-
-  const html = typeof res.data === "string" ? res.data : "";
-  const m = html.match(/nonce="([^"]+)"/);
-  return m ? m[1] : null;
-}
-
-// 从服务器响应头 Date 取时间戳（更贴近服务端，避免时差）
-async function getServerTimestampMs(client) {
-  const res = await client.get(`${BASE}/`, {
-    headers: {
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      Referer: `${BASE}/`,
-    },
-  });
-  const dateHeader = res?.headers?.date;
-  const ms = dateHeader ? new Date(dateHeader).getTime() : NaN;
-  return Number.isFinite(ms) ? ms : Date.now();
-}
-
-// POST /checkin
-async function checkin(client, csrf, nonce, timestampMs) {
-  const data = toFormUrlEncoded({ nonce, timestamp: String(timestampMs) });
-
-  const res = await client.post(`${BASE}/checkin`, data, {
-    headers: {
-      Accept: "*/*",
-      Referer: `${BASE}/`,
-      Origin: BASE,
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "User-Agent": UA,
+      Accept: "application/json, text/javascript, */*; q=0.01",
+      Referer: `${BASE}/login`,
       "X-Requested-With": "XMLHttpRequest",
       "Discourse-Present": "true",
-      "Discourse-Logged-In": "true",
-      "X-CSRF-Token": csrf,
-      "X-Discourse-Checkin": "true",
-      "X-Checkin-Nonce": nonce,
     },
   });
+  return res?.data?.csrf || null;
+}
 
-  if (res.status < 200 || res.status >= 300) {
+/**
+ * 关键：POST /checkin 空 body + x-csrf-token + x-requested-with
+ * （按你旧脚本的成功姿势）
+ */
+async function doCheckin(client, csrf) {
+  const res = await client.post(`${BASE}/checkin`, {}, {
+    headers: {
+      "User-Agent": UA,
+      Accept: "*/*",
+      ...(NODELOC_COOKIE ? { Cookie: NODELOC_COOKIE } : {}),
+      Referer: `${BASE}/latest`,
+      Origin: BASE,
+      "X-CSRF-Token": csrf,
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    validateStatus: (s) => s >= 200 && s < 500,
+    timeout: 30000,
+  });
+
+  if (res.status !== 200) {
     throw new Error(`签到请求失败，HTTP ${res.status}，响应：${safeText(res.data).slice(0, 300)}`);
   }
-
-  // 有时会 200 但 success:false（无效请求/已签到/IP限制等），也当作失败抛出方便看日志
-  if (res?.data && typeof res.data === "object" && res.data.success === false) {
-    throw new Error(`签到返回失败：${safeText(res.data)}`);
-  }
-
   return res.data;
 }
 
 async function main() {
   if (!NODELOC_COOKIE && (!USERNAME || !PASSWORD)) {
-    console.log("⚠️ 请设置 NODELOC_COOKIE（推荐），或设置 NODELOC_USERNAME / NODELOC_PASSWORD");
+    console.log("⚠️ 最少需要 NODELOC_COOKIE（推荐），或 NODELOC_USERNAME/NODELOC_PASSWORD");
     process.exit(1);
   }
 
@@ -195,13 +165,12 @@ async function main() {
     axios.create({
       jar,
       withCredentials: true,
-      timeout: 30000,
-      validateStatus: (s) => s >= 200 && s < 500,
       headers: { "User-Agent": UA },
+      timeout: 30000,
     })
   );
 
-  // 写入 Cookie（优先）
+  // 如果提供 cookie：写入 jar（以防站点读取 cookie jar）
   if (NODELOC_COOKIE) {
     NODELOC_COOKIE.split(";")
       .map((s) => s.trim())
@@ -212,28 +181,18 @@ async function main() {
   await sleep(Math.random() * 1200 + 600);
 
   try {
-    // 1) CSRF（初始）
-    const csrf1 = await fetchCsrf(client, `${BASE}/login`);
-    if (!csrf1) throw new Error("获取 CSRF 失败");
-
-    // 2) 登录（仅当没 cookie）
+    // 如果没有 cookie 才走账号密码登录
     if (!NODELOC_COOKIE) {
-      await login(client, csrf1, USERNAME, PASSWORD, TIMEZONE);
+      const csrf0 = await fetchSessionCsrf(client);
+      if (!csrf0) throw new Error("获取登录 CSRF 失败");
+      await login(client, csrf0, USERNAME, PASSWORD, TIMEZONE);
     }
 
-    // 3) nonce
-    const nonce = await fetchNonce(client);
-    if (!nonce) throw new Error("获取 nonce 失败（Cookie 可能失效/未登录/页面变化）");
+    // 关键：从 /latest 的 meta 拿 csrf-token
+    const csrf = await fetchMetaCsrf(client);
+    if (!csrf) throw new Error("获取 meta csrf-token 失败（Cookie 可能无效/页面结构变化）");
 
-    // 4) timestamp（用服务器时间更稳）
-    const ts = await getServerTimestampMs(client);
-
-    // 5) 关键：签到前再取一次 CSRF（对齐 HAR 流程）
-    const csrf2 = await fetchCsrf(client, `${BASE}/`);
-    if (!csrf2) throw new Error("获取签到用 CSRF 失败");
-
-    // 6) checkin
-    const result = await checkin(client, csrf2, nonce, ts);
+    const result = await doCheckin(client, csrf);
 
     const msg = "✅ NodeLoc 签到结果：\n```json\n" + JSON.stringify(result, null, 2) + "\n```";
     console.log(msg);
