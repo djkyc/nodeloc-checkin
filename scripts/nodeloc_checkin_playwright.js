@@ -1,6 +1,5 @@
 const { chromium } = require("playwright");
 const axios = require("axios");
-const fs = require("fs");
 
 const BASE = "https://www.nodeloc.com";
 const NODELOC_COOKIE = (process.env.NODELOC_COOKIE || "").trim();
@@ -58,58 +57,35 @@ function parseCookies(cookieStr) {
       timeout: 60000,
     });
 
-    await page.waitForTimeout(5000);
+    // 等页面和头部完全就绪
+    await page.waitForSelector(".header-dropdown-toggle", { timeout: 20000 });
+    await page.waitForTimeout(3000);
 
-    // 1️⃣ 截图（无论成功/失败都留证据）
-    await page.screenshot({ path: "nodeloc_page.png", fullPage: true });
-
-    // 2️⃣ 确认登录态
-    const loggedIn = await page
-      .locator("img.avatar")
-      .first()
-      .isVisible()
-      .catch(() => false);
-
-    if (!loggedIn) {
-      throw new Error("Cookie 失效：未检测到登录态");
+    // ① 是否存在签到图标（判断是否登录）
+    const hasCheckinIcon = await page.$("li.header-dropdown-toggle.checkin-icon");
+    if (!hasCheckinIcon) {
+      throw new Error("未检测到签到入口（可能未登录）");
     }
 
-    // 3️⃣ 查找“签到相关元素”（更宽松）
-    const result = await page.evaluate(() => {
-      const textHit = [...document.querySelectorAll("a,button,div,span")]
-        .find(el => el.innerText && el.innerText.includes("签到"));
-
-      if (textHit) {
-        textHit.click();
-        return { status: "clicked" };
-      }
-
-      // 没找到按钮，但看看有没有“已签到”提示
-      const signed = [...document.body.innerText.split("\n")]
-        .some(t => t.includes("已签到") || t.includes("今日已"));
-
-      if (signed) {
-        return { status: "already_signed" };
-      }
-
-      return { status: "not_found" };
-    });
-
-    if (result.status === "clicked") {
-      await page.waitForTimeout(3000);
-      console.log("✅ NodeLoc 签到成功（点击完成）");
-      await sendTG("✅ NodeLoc 已自动签到（Playwright）");
+    // ② 是否已签到（calendar-check）
+    const alreadySigned = await page.$(".d-icon-calendar-check");
+    if (alreadySigned) {
+      console.log("🟢 NodeLoc 今日已签到");
+      await sendTG("🟢 NodeLoc 今日已签到");
       process.exit(0);
     }
 
-    if (result.status === "already_signed") {
-      console.log("🟢 NodeLoc 今日已签到（无需重复）");
-      await sendTG("🟢 NodeLoc 今日已签到（跳过）");
-      process.exit(0);
+    // ③ 未签到 → 点击签到按钮
+    const checkinBtn = await page.$("button.checkin-button");
+    if (!checkinBtn) {
+      throw new Error("未找到签到按钮（DOM 结构异常）");
     }
 
-    // 都不是 → 真异常
-    throw new Error("页面未发现签到入口（请查看截图）");
+    await checkinBtn.click();
+    await page.waitForTimeout(3000);
+
+    console.log("✅ NodeLoc 签到成功");
+    await sendTG("✅ NodeLoc 签到成功");
 
   } catch (err) {
     console.error("❌ NodeLoc 签到失败：", err.message);
