@@ -1,5 +1,6 @@
 const { chromium } = require("playwright");
 const axios = require("axios");
+const fs = require("fs");
 
 const BASE = "https://www.nodeloc.com";
 const NODELOC_COOKIE = (process.env.NODELOC_COOKIE || "").trim();
@@ -29,7 +30,6 @@ function parseCookies(cookieStr) {
         domain: "www.nodeloc.com",
         path: "/",
         secure: true,
-        httpOnly: false,
       };
     });
 }
@@ -50,20 +50,20 @@ function parseCookies(cookieStr) {
   });
 
   await context.addCookies(parseCookies(NODELOC_COOKIE));
-
   const page = await context.newPage();
 
   try {
-    // ✅ 关键修复点
     await page.goto(BASE, {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
 
-    // 手动等待页面稳定（非常重要）
     await page.waitForTimeout(5000);
 
-    // 校验登录态（头像是否存在）
+    // 1️⃣ 截图（无论成功/失败都留证据）
+    await page.screenshot({ path: "nodeloc_page.png", fullPage: true });
+
+    // 2️⃣ 确认登录态
     const loggedIn = await page
       .locator("img.avatar")
       .first()
@@ -71,30 +71,46 @@ function parseCookies(cookieStr) {
       .catch(() => false);
 
     if (!loggedIn) {
-      throw new Error("Cookie 已失效：页面未显示登录态");
+      throw new Error("Cookie 失效：未检测到登录态");
     }
 
-    // 点击签到按钮（执行页面 JS）
-    const clicked = await page.evaluate(() => {
-      const btn =
-        document.querySelector('[data-action="checkin"]') ||
-        [...document.querySelectorAll("button, a")].find(el =>
-          el.innerText.includes("签到")
-        );
+    // 3️⃣ 查找“签到相关元素”（更宽松）
+    const result = await page.evaluate(() => {
+      const textHit = [...document.querySelectorAll("a,button,div,span")]
+        .find(el => el.innerText && el.innerText.includes("签到"));
 
-      if (!btn) return false;
-      btn.click();
-      return true;
+      if (textHit) {
+        textHit.click();
+        return { status: "clicked" };
+      }
+
+      // 没找到按钮，但看看有没有“已签到”提示
+      const signed = [...document.body.innerText.split("\n")]
+        .some(t => t.includes("已签到") || t.includes("今日已"));
+
+      if (signed) {
+        return { status: "already_signed" };
+      }
+
+      return { status: "not_found" };
     });
 
-    await page.waitForTimeout(3000);
-
-    if (!clicked) {
-      throw new Error("未找到签到按钮（可能已签到或页面结构变化）");
+    if (result.status === "clicked") {
+      await page.waitForTimeout(3000);
+      console.log("✅ NodeLoc 签到成功（点击完成）");
+      await sendTG("✅ NodeLoc 已自动签到（Playwright）");
+      process.exit(0);
     }
 
-    console.log("✅ NodeLoc 签到成功（Playwright）");
-    await sendTG("✅ NodeLoc Playwright 签到成功");
+    if (result.status === "already_signed") {
+      console.log("🟢 NodeLoc 今日已签到（无需重复）");
+      await sendTG("🟢 NodeLoc 今日已签到（跳过）");
+      process.exit(0);
+    }
+
+    // 都不是 → 真异常
+    throw new Error("页面未发现签到入口（请查看截图）");
+
   } catch (err) {
     console.error("❌ NodeLoc 签到失败：", err.message);
     await sendTG(`❌ NodeLoc 签到失败：${err.message}`);
