@@ -27,6 +27,7 @@ jobs:
           NODELOC_USERNAME: ${{ secrets.NODELOC_USERNAME }}
           NODELOC_PASSWORD: ${{ secrets.NODELOC_PASSWORD }}
           NODELOC_TIMEZONE: ${{ secrets.NODELOC_TIMEZONE }}
+          NODELOC_COOKIE: ${{ secrets.NODELOC_COOKIE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
         run: node scripts/nodeloc_checkin.js
