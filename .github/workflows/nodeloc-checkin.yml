@@ -1,0 +1,41 @@
+name: NodeLoc Checkin
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # GitHub Actions 的 cron 是 UTC 时间
+    # 示例：每天 UTC 01:10 运行一次（你按需要改）
+    - cron: "10 1 * * *"
+
+concurrency:
+  group: nodeloc-checkin
+  cancel-in-progress: true
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install deps
+        run: |
+          npm init -y
+          npm i axios tough-cookie axios-cookiejar-support
+
+      - name: Run checkin
+        env:
+          NODELOC_USERNAME: ${{ secrets.NODELOC_USERNAME }}
+          NODELOC_PASSWORD: ${{ secrets.NODELOC_PASSWORD }}
+          NODELOC_TIMEZONE: ${{ secrets.NODELOC_TIMEZONE }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
+        run: node scripts/nodeloc_checkin.js
