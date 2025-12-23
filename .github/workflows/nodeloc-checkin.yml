@@ -28,6 +28,7 @@ jobs:
       - name: Run NodeLoc Playwright checkin
         env:
           NODELOC_COOKIE: ${{ secrets.NODELOC_COOKIE }}
+          NODELOC_EMAIL:  ${{ secrets.NODELOC_EMAIL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
         run: node scripts/nodeloc_checkin_playwright.js
