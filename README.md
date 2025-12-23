@@ -1,8 +1,6 @@
 仓库 Settings → Secrets and variables → Actions：
 
-NODELOC_USERNAME（可选不填）
-
-NODELOC_PASSWORD（可选不填）
+NODELOC_EMAIL（必需邮箱登陆）
 
 NODELOC_COOKIE（必需）
 
