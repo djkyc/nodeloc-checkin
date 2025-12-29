@@ -211,9 +211,20 @@ async function reloginAndRefresh(page) {
 
     log("检测到未签到状态，执行签到点击");
     await checkinBtn.click();
-    await page.waitForTimeout(3000);
 
-    log("签到操作完成");
+    // 🔴 关键修复：等待真实状态变化
+    log("等待签到状态更新确认");
+    try {
+      await page.waitForSelector(".d-icon-calendar-check", { timeout: 10000 });
+    } catch {
+      log("点击后未检测到已签到状态，判定签到失败");
+      await sendTG(
+        `❌ NodeLoc 签到失败（页面状态未变化）\n账号：${displayAccount}\n时间：${timeStr}`
+      );
+      process.exit(1);
+    }
+
+    log("检测到签到状态已更新，签到成功");
     await sendTG(
       `✅ NodeLoc 签到成功\n账号：${displayAccount}\n时间：${timeStr}`
     );
