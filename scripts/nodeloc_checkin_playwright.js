@@ -27,7 +27,7 @@ async function sendTG(message) {
   }
 }
 
-/* ========== 工具 ========= */
+/* ========== 工具函数 ========= */
 function parseCookies(cookieStr) {
   return cookieStr
     .split(";")
@@ -69,20 +69,24 @@ function formatBeijingTime(date = new Date()) {
   );
 }
 
-/* ===== 新增：Cookie 剩余天数 ===== */
-async function getCookieRemainDays(context) {
-  const cookies = await context.cookies(BASE);
-  const now = Date.now() / 1000;
+/* ========= 核心：检测签到结果（不依赖 toast DOM） ========= */
+async function detectCheckinResult(page, timeoutMs = 3000) {
+  const start = Date.now();
 
-  const target =
-    cookies.find(c => c.name === "_t") ||
-    cookies.find(c => c.name === "_forum_session");
+  while (Date.now() - start < timeoutMs) {
+    const text = await page.evaluate(() => document.body.innerText || "");
 
-  if (!target || !target.expires || target.expires < now) {
-    return 0;
+    if (text.includes("签到成功") || text.includes("获得了")) {
+      return "SUCCESS";
+    }
+    if (text.includes("已签到") || text.includes("无效的请求")) {
+      return "ALREADY";
+    }
+
+    await page.waitForTimeout(300);
   }
 
-  return Math.floor((target.expires - now) / 86400);
+  return "UNKNOWN";
 }
 
 /* ========== 主流程 ========= */
@@ -115,52 +119,58 @@ async function getCookieRemainDays(context) {
 
     const checkinBtn = await page.$("button.checkin-button");
     if (!checkinBtn) {
-      await sendTG(`⚠️ NodeLoc 未发现签到入口\n账号：${accountStr}\n时间：${timeStr}`);
+      log("未发现签到按钮");
+      await sendTG(
+        `⚠️ NodeLoc 未发现签到入口\n账号：${accountStr}\n时间：${timeStr}`
+      );
       process.exit(0);
     }
 
-    // ===== Cookie 存活天数统计 =====
-    const remainDays = await getCookieRemainDays(context);
-    log(`Cookie 剩余有效期：${remainDays} 天`);
+    log("执行签到点击（无论是否已签到）");
+    await checkinBtn.click();
 
-    if (remainDays > 0 && remainDays <= 3) {
+    log("检测签到结果（扫描页面文本）");
+    const result = await detectCheckinResult(page);
+
+    if (result === "SUCCESS") {
+      log("检测到新签到成功");
       await sendTG(
-        `⚠️ NodeLoc Cookie 即将过期\n剩余：${remainDays} 天`
+        `✅ NodeLoc 签到成功\n账号：${accountStr}\n时间：${timeStr}`
       );
+      process.exit(0);
     }
 
-    // ===== 已签到判断 =====
-    const alreadySigned = await checkinBtn.evaluate(btn => {
-      const text =
-        (btn.getAttribute("title") || "") +
-        (btn.getAttribute("aria-label") || "");
-      return btn.classList.contains("checked-in") || text.includes("已签到");
-    });
-
-    if (alreadySigned) {
+    if (result === "ALREADY") {
+      log("检测到今日已签到");
       await sendTG(
         `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
       );
       process.exit(0);
     }
 
-    // ===== 执行签到 =====
-    await checkinBtn.click();
-
-    await page.waitForFunction(() => {
-      const btn = document.querySelector("button.checkin-button");
-      if (!btn) return false;
-      const text =
-        (btn.getAttribute("title") || "") +
-        (btn.getAttribute("aria-label") || "");
-      return btn.classList.contains("checked-in") || text.includes("已签到");
-    }, { timeout: 10000 });
-
-    await sendTG(
-      `✅ NodeLoc 签到成功\n账号：${accountStr}\n时间：${timeStr}`
+    // ===== 兜底：检查按钮状态 =====
+    const isCheckedIn = await page.$eval(
+      "button.checkin-button",
+      btn => btn.classList.contains("checked-in")
     );
 
+    if (isCheckedIn) {
+      log("按钮已是 checked-in 状态，视为已签到");
+      await sendTG(
+        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
+      );
+      process.exit(0);
+    }
+
+    // 真异常
+    log("未识别页面结果，判定异常");
+    await sendTG(
+      `❌ NodeLoc 签到异常（未识别页面结果）\n账号：${accountStr}\n时间：${timeStr}`
+    );
+    process.exit(1);
+
   } catch (err) {
+    console.error("[NodeLoc] 执行异常：", err.message);
     await sendTG(`❌ NodeLoc 执行异常\n${err.message}`);
     process.exit(1);
   } finally {
