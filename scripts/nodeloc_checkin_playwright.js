@@ -6,8 +6,6 @@ const BASE = "https://www.nodeloc.com";
 /* ========== 环境变量 ========== */
 const NODELOC_COOKIE = (process.env.NODELOC_COOKIE || "").trim();
 const LOGIN_EMAIL = (process.env.NODELOC_LOGIN_EMAIL || "").trim();
-const LOGIN_PASSWORD = (process.env.NODELOC_LOGIN_PASSWORD || "").trim();
-const COOKIE_TG_MODE = (process.env.NODELOC_COOKIE_TG_MODE || "safe").toLowerCase();
 
 /* ========== 日志 ========= */
 function log(msg) {
@@ -29,7 +27,7 @@ async function sendTG(message) {
   }
 }
 
-/* ========== 工具函数 ========= */
+/* ========== 工具 ========= */
 function parseCookies(cookieStr) {
   return cookieStr
     .split(";")
@@ -101,43 +99,58 @@ function formatBeijingTime(date = new Date()) {
 
     const checkinBtn = await page.$("button.checkin-button");
     if (!checkinBtn) {
-      log("未找到签到按钮");
       await sendTG(`⚠️ NodeLoc 未发现签到入口\n账号：${accountStr}\n时间：${timeStr}`);
       process.exit(0);
     }
 
-    // 🔑 关键：点击前判断是否已签到
-    const alreadyCheckedIn = await checkinBtn.evaluate(btn =>
-      btn.classList.contains("checked-in")
-    );
+    log("执行签到点击（无论是否已签到）");
+    await checkinBtn.click();
 
-    if (alreadyCheckedIn) {
-      log("按钮已处于 checked-in 状态，今日已签到");
-      await sendTG(`🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`);
+    // ===== 以 toast 文案为最终结果 =====
+    let toastText = "";
+    try {
+      const toast = await page.waitForSelector(
+        '.toast, .alert, .popup',
+        { timeout: 8000 }
+      );
+      toastText = await toast.innerText();
+      log(`捕获到页面提示：${toastText}`);
+    } catch {
+      log("未捕获到任何页面提示");
+    }
+
+    if (toastText.includes("签到成功")) {
+      await sendTG(
+        `✅ NodeLoc 签到成功\n账号：${accountStr}\n时间：${timeStr}`
+      );
       process.exit(0);
     }
 
-    // 未签到，执行点击
-    log("检测到未签到状态，执行签到点击");
-    await checkinBtn.click();
-
-    // 🔑 关键：等待按钮进入 checked-in 状态
-    try {
-      await page.waitForFunction(
-        () => {
-          const btn = document.querySelector("button.checkin-button");
-          return btn && btn.classList.contains("checked-in");
-        },
-        { timeout: 10000 }
+    if (toastText.includes("已签到")) {
+      await sendTG(
+        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
       );
-    } catch {
-      log("点击后按钮未进入 checked-in 状态，签到失败");
-      await sendTG(`❌ NodeLoc 签到失败（状态未变化）\n账号：${accountStr}\n时间：${timeStr}`);
-      process.exit(1);
+      process.exit(0);
     }
 
-    log("检测到按钮进入 checked-in 状态，签到成功");
-    await sendTG(`✅ NodeLoc 签到成功\n账号：${accountStr}\n时间：${timeStr}`);
+    // 兜底：没提示但按钮是 checked-in
+    const isCheckedIn = await page.$eval(
+      "button.checkin-button",
+      btn => btn.classList.contains("checked-in")
+    );
+
+    if (isCheckedIn) {
+      await sendTG(
+        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
+      );
+      process.exit(0);
+    }
+
+    // 真异常
+    await sendTG(
+      `❌ NodeLoc 签到异常（未识别页面结果）\n账号：${accountStr}\n时间：${timeStr}`
+    );
+    process.exit(1);
 
   } catch (err) {
     console.error("[NodeLoc] 执行异常：", err.message);
