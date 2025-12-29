@@ -3,13 +3,16 @@ const axios = require("axios");
 
 const BASE = "https://www.nodeloc.com";
 
-// 必需：登录后的 Cookie
+/* ========== 环境变量 ========== */
 const NODELOC_COOKIE = (process.env.NODELOC_COOKIE || "").trim();
+const LOGIN_EMAIL = (process.env.NODELOC_LOGIN_EMAIL || "").trim();
 
-// 可选：邮箱（只用于展示，自动打码）
-const NODELOC_EMAIL = (process.env.NODELOC_EMAIL || "").trim();
+/* ========== 日志 ========= */
+function log(msg) {
+  console.log(`[NodeLoc] ${msg}`);
+}
 
-/* ================== TG 推送 ================== */
+/* ========== TG ========= */
 async function sendTG(message) {
   const TG_TOKEN = process.env.TG_BOT_TOKEN;
   const TG_USER_ID = process.env.TG_USER_ID;
@@ -20,11 +23,11 @@ async function sendTG(message) {
       text: message,
     });
   } catch (e) {
-    console.error("TG 发送失败：", e.message);
+    console.error("[NodeLoc][TG] 发送失败：", e.message);
   }
 }
 
-/* ================== Cookie 解析 ================== */
+/* ========== 工具 ========= */
 function parseCookies(cookieStr) {
   return cookieStr
     .split(";")
@@ -42,25 +45,14 @@ function parseCookies(cookieStr) {
     });
 }
 
-/* ================== 打码规则 ================== */
-// 邮箱：保留前 2 位 + 域名
 function maskEmail(email) {
-  if (!email.includes("@")) return "";
-  const [user, domain] = email.split("@");
-  if (user.length <= 1) return "*@" + domain;
-  if (user.length === 2) return user[0] + "*@" + domain;
-  return user.slice(0, 2) + "*".repeat(user.length - 2) + "@" + domain;
+  if (!email || !email.includes("@")) return "***";
+  const [u, d] = email.split("@");
+  if (u.length <= 1) return "*@" + d;
+  if (u.length === 2) return u[0] + "*@" + d;
+  return u.slice(0, 2) + "*".repeat(u.length - 2) + "@" + d;
 }
 
-// 用户名：首尾保留
-function maskName(name) {
-  if (!name) return "***";
-  if (name.length === 1) return "*";
-  if (name.length === 2) return name[0] + "*";
-  return name[0] + "*".repeat(name.length - 2) + name[name.length - 1];
-}
-
-/* ================== 北京时间 ================== */
 function formatBeijingTime(date = new Date()) {
   const bj = new Date(date.getTime() + 8 * 60 * 60 * 1000);
   const pad = n => String(n).padStart(2, "0");
@@ -77,10 +69,12 @@ function formatBeijingTime(date = new Date()) {
   );
 }
 
-/* ================== 主流程 ================== */
+/* ========== 主流程 ========= */
 (async () => {
+  log("启动 NodeLoc 签到任务");
+
   if (!NODELOC_COOKIE) {
-    await sendTG("❌ NodeLoc Cookie 缺失，请重新登录并更新");
+    await sendTG("❌ NodeLoc Cookie 缺失");
     process.exit(1);
   }
 
@@ -97,84 +91,73 @@ function formatBeijingTime(date = new Date()) {
   const page = await context.newPage();
 
   try {
-    await page.goto(BASE, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
-
-    await page.waitForSelector("header", { timeout: 20000 });
+    await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(3000);
-
-    // 判断 Cookie 是否有效（是否存在签到入口）
-    const checkinIcon = await page.$(
-      "li.header-dropdown-toggle.checkin-icon"
-    );
 
     const timeStr = formatBeijingTime();
+    const accountStr = LOGIN_EMAIL ? maskEmail(LOGIN_EMAIL) : "（邮箱未配置）";
 
-    if (!checkinIcon) {
-      await sendTG(
-        `❌ NodeLoc Cookie 已失效\n时间：${timeStr}`
-      );
-      process.exit(1);
-    }
-
-    // 读取页面账号身份（username）
-    const rawAccount = await page.evaluate(() => {
-      const img = document.querySelector("img.avatar");
-      return (
-        img?.getAttribute("alt") ||
-        img?.getAttribute("title") ||
-        ""
-      );
-    });
-
-    // 展示账号逻辑：邮箱优先，其次 username（全部打码）
-    let displayAccount = "";
-    if (NODELOC_EMAIL) {
-      displayAccount = maskEmail(NODELOC_EMAIL);
-    } else {
-      displayAccount = maskName(rawAccount);
-    }
-
-    // 已签到
-    const alreadySigned = await page.$(".d-icon-calendar-check");
-    if (alreadySigned) {
-      await sendTG(
-        `🟢 NodeLoc 今日已签到\n` +
-        `账号：${displayAccount}\n` +
-        `时间：${timeStr}`
-      );
-      process.exit(0);
-    }
-
-    // 未签到 → 点击
     const checkinBtn = await page.$("button.checkin-button");
     if (!checkinBtn) {
+      await sendTG(`⚠️ NodeLoc 未发现签到入口\n账号：${accountStr}\n时间：${timeStr}`);
+      process.exit(0);
+    }
+
+    log("执行签到点击（无论是否已签到）");
+    await checkinBtn.click();
+
+    // ===== 以 toast 文案为最终结果 =====
+    let toastText = "";
+    try {
+      const toast = await page.waitForSelector(
+        '.toast, .alert, .popup',
+        { timeout: 8000 }
+      );
+      toastText = await toast.innerText();
+      log(`捕获到页面提示：${toastText}`);
+    } catch {
+      log("未捕获到任何页面提示");
+    }
+
+    if (toastText.includes("签到成功")) {
       await sendTG(
-        `⚠️ NodeLoc 未发现签到入口\n` +
-        `账号：${displayAccount}\n` +
-        `时间：${timeStr}`
+        `✅ NodeLoc 签到成功\n账号：${accountStr}\n时间：${timeStr}`
       );
       process.exit(0);
     }
 
-    await checkinBtn.click();
-    await page.waitForTimeout(3000);
+    if (toastText.includes("已签到")) {
+      await sendTG(
+        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
+      );
+      process.exit(0);
+    }
 
-    await sendTG(
-      `✅ NodeLoc 签到成功\n` +
-      `账号：${displayAccount}\n` +
-      `时间：${timeStr}`
+    // 兜底：没提示但按钮是 checked-in
+    const isCheckedIn = await page.$eval(
+      "button.checkin-button",
+      btn => btn.classList.contains("checked-in")
     );
 
-  } catch (err) {
+    if (isCheckedIn) {
+      await sendTG(
+        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
+      );
+      process.exit(0);
+    }
+
+    // 真异常
     await sendTG(
-      `❌ NodeLoc 签到异常\n` +
-      `错误：${err.message}`
+      `❌ NodeLoc 签到异常（未识别页面结果）\n账号：${accountStr}\n时间：${timeStr}`
     );
     process.exit(1);
+
+  } catch (err) {
+    console.error("[NodeLoc] 执行异常：", err.message);
+    await sendTG(`❌ NodeLoc 执行异常\n${err.message}`);
+    process.exit(1);
   } finally {
+    log("关闭浏览器，任务结束");
     await browser.close();
   }
 })();
