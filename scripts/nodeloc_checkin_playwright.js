@@ -69,6 +69,22 @@ function formatBeijingTime(date = new Date()) {
   );
 }
 
+/* ===== 新增：Cookie 剩余天数 ===== */
+async function getCookieRemainDays(context) {
+  const cookies = await context.cookies(BASE);
+  const now = Date.now() / 1000;
+
+  const target =
+    cookies.find(c => c.name === "_t") ||
+    cookies.find(c => c.name === "_forum_session");
+
+  if (!target || !target.expires || target.expires < now) {
+    return 0;
+  }
+
+  return Math.floor((target.expires - now) / 86400);
+}
+
 /* ========== 主流程 ========= */
 (async () => {
   log("启动 NodeLoc 签到任务");
@@ -103,57 +119,48 @@ function formatBeijingTime(date = new Date()) {
       process.exit(0);
     }
 
-    log("执行签到点击（无论是否已签到）");
+    // ===== Cookie 存活天数统计 =====
+    const remainDays = await getCookieRemainDays(context);
+    log(`Cookie 剩余有效期：${remainDays} 天`);
+
+    if (remainDays > 0 && remainDays <= 3) {
+      await sendTG(
+        `⚠️ NodeLoc Cookie 即将过期\n剩余：${remainDays} 天`
+      );
+    }
+
+    // ===== 已签到判断 =====
+    const alreadySigned = await checkinBtn.evaluate(btn => {
+      const text =
+        (btn.getAttribute("title") || "") +
+        (btn.getAttribute("aria-label") || "");
+      return btn.classList.contains("checked-in") || text.includes("已签到");
+    });
+
+    if (alreadySigned) {
+      await sendTG(
+        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
+      );
+      process.exit(0);
+    }
+
+    // ===== 执行签到 =====
     await checkinBtn.click();
 
-    // ===== 以 toast 文案为最终结果 =====
-    let toastText = "";
-    try {
-      const toast = await page.waitForSelector(
-        '.toast, .alert, .popup',
-        { timeout: 8000 }
-      );
-      toastText = await toast.innerText();
-      log(`捕获到页面提示：${toastText}`);
-    } catch {
-      log("未捕获到任何页面提示");
-    }
+    await page.waitForFunction(() => {
+      const btn = document.querySelector("button.checkin-button");
+      if (!btn) return false;
+      const text =
+        (btn.getAttribute("title") || "") +
+        (btn.getAttribute("aria-label") || "");
+      return btn.classList.contains("checked-in") || text.includes("已签到");
+    }, { timeout: 10000 });
 
-    if (toastText.includes("签到成功")) {
-      await sendTG(
-        `✅ NodeLoc 签到成功\n账号：${accountStr}\n时间：${timeStr}`
-      );
-      process.exit(0);
-    }
-
-    if (toastText.includes("已签到")) {
-      await sendTG(
-        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
-      );
-      process.exit(0);
-    }
-
-    // 兜底：没提示但按钮是 checked-in
-    const isCheckedIn = await page.$eval(
-      "button.checkin-button",
-      btn => btn.classList.contains("checked-in")
-    );
-
-    if (isCheckedIn) {
-      await sendTG(
-        `🟢 NodeLoc 今日已签到\n账号：${accountStr}\n时间：${timeStr}`
-      );
-      process.exit(0);
-    }
-
-    // 真异常
     await sendTG(
-      `❌ NodeLoc 签到异常（未识别页面结果）\n账号：${accountStr}\n时间：${timeStr}`
+      `✅ NodeLoc 签到成功\n账号：${accountStr}\n时间：${timeStr}`
     );
-    process.exit(1);
 
   } catch (err) {
-    console.error("[NodeLoc] 执行异常：", err.message);
     await sendTG(`❌ NodeLoc 执行异常\n${err.message}`);
     process.exit(1);
   } finally {
