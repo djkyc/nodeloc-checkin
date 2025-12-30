@@ -28,6 +28,8 @@ jobs:
       - name: Run NodeLoc Checkin
         env:
           NODELOC_COOKIE: ${{ secrets.NODELOC_COOKIE }}
+          NODELOC_USERNAME: ${{ secrets.NODELOC_USERNAME }}
+          NODELOC_PASSWORD: ${{ secrets.NODELOC_PASSWORD }}
           NODELOC_LOGIN_EMAIL: ${{ secrets.NODELOC_LOGIN_EMAIL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_USER_ID: ${{ secrets.TG_USER_ID }}
