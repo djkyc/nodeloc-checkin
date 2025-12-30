@@ -90,11 +90,11 @@ async def main():
     account = mask_email(LOGIN_EMAIL) if LOGIN_EMAIL else "（邮箱未配置）"
     now = beijing_time()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"]
-        )
+    browser = await p.chromium.launch(
+        headless=False,
+        slow_mo=300,
+        args=["--no-sandbox"]
+)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800}
         )
