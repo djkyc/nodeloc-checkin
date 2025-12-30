@@ -82,16 +82,14 @@ async def login_and_get_new_cookie(context, page):
     await page.goto(f"{BASE}/login", wait_until="domcontentloaded")
     await page.wait_for_timeout(1500)
 
-    log("填写登录表单")
     await page.fill("input[name='email']", NODELOC_USERNAME)
     await page.fill("input[name='password']", NODELOC_PASSWORD)
     await page.click("button[type='submit']")
 
-    log("已提交登录表单，等待跳转")
     await page.wait_for_timeout(5000)
 
     if "login" in page.url:
-        log("仍停留在登录页，判定登录失败（可能有验证码）")
+        log("仍停留在登录页，登录失败（可能验证码/风控）")
         return None
 
     cookies = await context.cookies(BASE)
@@ -112,6 +110,12 @@ async def main():
     log("====== NodeLoc 签到任务开始 ======")
     log(f"账号：{account}")
 
+    # 用于记录接口监听结果
+    checkin_result = {
+        "hit": False,
+        "responses": []
+    }
+
     async with async_playwright() as p:
         log("启动 Chromium")
         browser = await p.chromium.launch(
@@ -130,6 +134,21 @@ async def main():
             log("未配置 NODELOC_COOKIE")
 
         page = await context.new_page()
+
+        # ===== 接口监听（核心）=====
+        async def on_response(response):
+            url = response.url
+            if any(k in url.lower() for k in ["check", "sign", "attendance"]):
+                try:
+                    text = await response.text()
+                except:
+                    text = "(no body)"
+                checkin_result["hit"] = True
+                checkin_result["responses"].append(f"{url} -> {text}")
+                log(f"捕获到签到相关接口：{url}")
+
+        page.on("response", on_response)
+
         log("访问 NodeLoc 首页")
         await page.goto(BASE, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
@@ -144,42 +163,23 @@ async def main():
             await browser.close()
 
             if new_cookie:
-                log("已获取新 Cookie，发送 TG")
                 send_tg(
                     "🚨 <b>NodeLoc Cookie 已失效，已自动获取新 Cookie</b>\n\n"
                     f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
                     f"🕒 时间：{now}\n\n"
                     "📎 <b>新的 Cookie（请手动更新 GitHub Secrets）</b>\n"
-                    f"<code>{new_cookie}</code>\n\n"
-                    "👉 复制以上 Cookie → GitHub → Secrets → "
-                    "<b>NODELOC_COOKIE</b> 覆盖保存"
+                    f"<code>{new_cookie}</code>"
                 )
             else:
-                log("自动登录失败，发送失败通知")
                 send_tg(
                     "❌ <b>NodeLoc Cookie 失效，自动登录失败</b>\n\n"
                     f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
                     f"🕒 时间：{now}\n\n"
-                    "⚠️ 可能原因：验证码 / 风控\n"
-                    "👉 请手动登录网站并更新 Cookie"
+                    "⚠️ 可能原因：验证码 / 风控"
                 )
             return
 
-        # ===== 正常签到 =====
-        log("读取签到按钮初始状态")
-        before = await btn.evaluate(
-            """
-            b => ({
-                checked: b.classList.contains("checked-in"),
-                disabled: b.disabled,
-                text: (b.getAttribute("title") || "") +
-                      (b.getAttribute("aria-label") || "")
-            })
-            """
-        )
-
-        log(f"点击前状态：{before}")
-
+        # ===== 点击签到 =====
         log("滚动并点击签到按钮")
         await page.evaluate(
             """
@@ -193,54 +193,30 @@ async def main():
             """
         )
 
-        await page.wait_for_timeout(1000)
-
-        log("读取点击后状态")
-        after = await page.evaluate(
-            """
-            () => {
-                const b = document.querySelector("button.checkin-button");
-                if (!b) return null;
-                const text = (b.getAttribute("title") || "") +
-                             (b.getAttribute("aria-label") || "");
-                return {
-                    checked: b.classList.contains("checked-in"),
-                    disabled: b.disabled,
-                    text
-                };
-            }
-            """
-        )
-
-        log(f"点击后状态：{after}")
+        log("等待签到接口响应")
+        await page.wait_for_timeout(3000)
 
         await browser.close()
         log("浏览器已关闭")
 
-        if not before["checked"] and not before["disabled"] and "已签到" not in before["text"]:
-            if after and (after["checked"] or after["disabled"] or "已签到" in after["text"]):
-                log("判定：签到成功")
-                send_tg(
-                    "✅ <b>NodeLoc 签到成功</b>\n\n"
-                    f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                    f"🕒 时间：{now}"
-                )
-                return
-
-        if after and ("已签到" in after["text"] or before["checked"] or before["disabled"]):
-            log("判定：今日已签到")
+        # ===== 基于接口的最终判定 =====
+        if checkin_result["hit"]:
+            log("判定：已捕获签到接口请求")
             send_tg(
-                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
+                "✅ <b>NodeLoc 签到请求已触发</b>\n\n"
                 f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                f"🕒 时间：{now}"
+                f"🕒 时间：{now}\n\n"
+                "📡 <b>接口响应摘要</b>\n"
+                f"<code>{checkin_result['responses'][0][:1000]}</code>"
             )
             return
 
-        log("判定：签到未触发")
+        log("未捕获到任何签到接口，请求可能被拦截")
         send_tg(
-            "❌ <b>NodeLoc 签到未触发</b>\n\n"
+            "❌ <b>NodeLoc 签到未触发（未检测到接口请求）</b>\n\n"
             f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-            f"🕒 时间：{now}"
+            f"🕒 时间：{now}\n\n"
+            "⚠️ 按钮已点击，但未产生网络请求"
         )
 
 
