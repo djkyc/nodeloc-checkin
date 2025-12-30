@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import json
 import requests
 from playwright.async_api import async_playwright
 
@@ -110,10 +111,11 @@ async def main():
     log("====== NodeLoc 签到任务开始 ======")
     log(f"账号：{account}")
 
-    # 用于记录接口监听结果
-    checkin_result = {
+    # 用于保存签到接口结果
+    checkin = {
         "hit": False,
-        "responses": []
+        "status": None,   # success / already / failed
+        "raw": None
     }
 
     async with async_playwright() as p:
@@ -137,15 +139,26 @@ async def main():
 
         # ===== 接口监听（核心）=====
         async def on_response(response):
-            url = response.url
-            if any(k in url.lower() for k in ["check", "sign", "attendance"]):
+            url = response.url.lower()
+            if "/checkin" in url:
+                log(f"捕获到签到接口：{response.url}")
+                checkin["hit"] = True
                 try:
-                    text = await response.text()
+                    data = await response.json()
                 except:
-                    text = "(no body)"
-                checkin_result["hit"] = True
-                checkin_result["responses"].append(f"{url} -> {text}")
-                log(f"捕获到签到相关接口：{url}")
+                    data = await response.text()
+
+                checkin["raw"] = data
+
+                # ===== 判定逻辑 =====
+                text = json.dumps(data, ensure_ascii=False) if isinstance(data, dict) else str(data)
+
+                if "已签到" in text or "already" in text:
+                    checkin["status"] = "already"
+                elif "成功" in text or "success" in text:
+                    checkin["status"] = "success"
+                else:
+                    checkin["status"] = "failed"
 
         page.on("response", on_response)
 
@@ -199,24 +212,37 @@ async def main():
         await browser.close()
         log("浏览器已关闭")
 
-        # ===== 基于接口的最终判定 =====
-        if checkin_result["hit"]:
-            log("判定：已捕获签到接口请求")
+        # ===== 最终判定 =====
+        if not checkin["hit"]:
             send_tg(
-                "✅ <b>NodeLoc 签到请求已触发</b>\n\n"
+                "❌ <b>NodeLoc 签到未触发（未检测到接口）</b>\n\n"
                 f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                f"🕒 时间：{now}\n\n"
-                "📡 <b>接口响应摘要</b>\n"
-                f"<code>{checkin_result['responses'][0][:1000]}</code>"
+                f"🕒 时间：{now}"
             )
             return
 
-        log("未捕获到任何签到接口，请求可能被拦截")
+        if checkin["status"] == "success":
+            send_tg(
+                "✅ <b>NodeLoc 今日签到成功</b>\n\n"
+                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
+                f"🕒 时间：{now}"
+            )
+            return
+
+        if checkin["status"] == "already":
+            send_tg(
+                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
+                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
+                f"🕒 时间：{now}"
+            )
+            return
+
+        # 兜底
         send_tg(
-            "❌ <b>NodeLoc 签到未触发（未检测到接口请求）</b>\n\n"
+            "⚠️ <b>NodeLoc 签到状态未知</b>\n\n"
             f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
             f"🕒 时间：{now}\n\n"
-            "⚠️ 按钮已点击，但未产生网络请求"
+            f"<code>{str(checkin['raw'])[:1000]}</code>"
         )
 
 
