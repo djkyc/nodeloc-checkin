@@ -1,7 +1,6 @@
 import asyncio
 import os
 import time
-import json
 import requests
 from playwright.async_api import async_playwright
 
@@ -9,8 +8,6 @@ BASE = "https://www.nodeloc.com"
 
 # ===== Secrets =====
 NODELOC_COOKIE = os.getenv("NODELOC_COOKIE", "")
-NODELOC_USERNAME = os.getenv("NODELOC_USERNAME", "")
-NODELOC_PASSWORD = os.getenv("NODELOC_PASSWORD", "")
 LOGIN_EMAIL = os.getenv("NODELOC_LOGIN_EMAIL", "")
 
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -26,7 +23,7 @@ def log(msg: str):
 # ===== Utils =====
 def send_tg(msg: str):
     if not TG_BOT_TOKEN or not TG_USER_ID:
-        log("TG 未配置，跳过发送通知")
+        log("TG 未配置，跳过通知")
         return
 
     log("发送 TG 通知")
@@ -72,37 +69,6 @@ def parse_cookies(cookie_str: str):
     return cookies
 
 
-# ===== 自动登录并获取新 Cookie =====
-async def login_and_get_new_cookie(context, page):
-    if not NODELOC_USERNAME or not NODELOC_PASSWORD:
-        log("未配置账号密码，无法自动登录")
-        return None
-
-    log("Cookie 失效，尝试账号密码自动登录")
-
-    await page.goto(f"{BASE}/login", wait_until="domcontentloaded")
-    await page.wait_for_timeout(1500)
-
-    await page.fill("input[name='email']", NODELOC_USERNAME)
-    await page.fill("input[name='password']", NODELOC_PASSWORD)
-    await page.click("button[type='submit']")
-
-    await page.wait_for_timeout(5000)
-
-    if "login" in page.url:
-        log("仍停留在登录页，登录失败（可能验证码/风控）")
-        return None
-
-    cookies = await context.cookies(BASE)
-    if not cookies:
-        log("登录成功但未读取到 Cookie")
-        return None
-
-    cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-    log("成功获取新的 Cookie")
-    return cookie_str
-
-
 # ===== 主流程 =====
 async def main():
     account = mask_email(LOGIN_EMAIL) if LOGIN_EMAIL else "（邮箱未配置）"
@@ -111,11 +77,11 @@ async def main():
     log("====== NodeLoc 签到任务开始 ======")
     log(f"账号：{account}")
 
-    # 用于保存签到接口结果
+    # 用于保存接口判定结果
     checkin = {
-        "hit": False,
+        "hit": False,      # 是否捕获到 /checkin
         "status": None,   # success / already / failed
-        "raw": None
+        "message": ""     # 接口 message（权威）
     }
 
     async with async_playwright() as p:
@@ -137,28 +103,40 @@ async def main():
 
         page = await context.new_page()
 
-        # ===== 接口监听（核心）=====
+        # ===== 只监听真正的签到接口 =====
         async def on_response(response):
-            url = response.url.lower()
-            if "/checkin" in url:
-                log(f"捕获到签到接口：{response.url}")
-                checkin["hit"] = True
-                try:
-                    data = await response.json()
-                except:
-                    data = await response.text()
+            if "/checkin" not in response.url:
+                return
 
-                checkin["raw"] = data
+            log(f"捕获到签到接口：{response.url}")
+            checkin["hit"] = True
 
-                # ===== 判定逻辑 =====
-                text = json.dumps(data, ensure_ascii=False) if isinstance(data, dict) else str(data)
+            try:
+                data = await response.json()
+            except Exception:
+                log("签到接口返回非 JSON")
+                checkin["status"] = "failed"
+                return
 
-                if "已签到" in text or "already" in text:
-                    checkin["status"] = "already"
-                elif "成功" in text or "success" in text:
-                    checkin["status"] = "success"
-                else:
-                    checkin["status"] = "failed"
+            # NodeLoc / Discourse 插件：message 才是唯一权威
+            msg = (
+                data.get("message")
+                or data.get("msg")
+                or data.get("notice")
+                or ""
+            )
+            msg = str(msg)
+            checkin["message"] = msg
+
+            log(f"签到接口 message：{msg}")
+
+            # ===== 严格判断顺序（非常重要）=====
+            if "已签到" in msg or "今天已经签到" in msg:
+                checkin["status"] = "already"
+            elif "签到成功" in msg or "成功" in msg:
+                checkin["status"] = "success"
+            else:
+                checkin["status"] = "failed"
 
         page.on("response", on_response)
 
@@ -169,30 +147,17 @@ async def main():
         log("查找签到按钮")
         btn = await page.query_selector("button.checkin-button")
 
-        # ===== Cookie 失效 =====
         if not btn:
-            log("未找到签到按钮，判定 Cookie 失效")
-            new_cookie = await login_and_get_new_cookie(context, page)
+            log("未找到签到按钮，Cookie 可能失效")
             await browser.close()
-
-            if new_cookie:
-                send_tg(
-                    "🚨 <b>NodeLoc Cookie 已失效，已自动获取新 Cookie</b>\n\n"
-                    f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                    f"🕒 时间：{now}\n\n"
-                    "📎 <b>新的 Cookie（请手动更新 GitHub Secrets）</b>\n"
-                    f"<code>{new_cookie}</code>"
-                )
-            else:
-                send_tg(
-                    "❌ <b>NodeLoc Cookie 失效，自动登录失败</b>\n\n"
-                    f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                    f"🕒 时间：{now}\n\n"
-                    "⚠️ 可能原因：验证码 / 风控"
-                )
+            send_tg(
+                "❌ <b>NodeLoc Cookie 可能已失效</b>\n\n"
+                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
+                f"🕒 时间：{now}\n\n"
+                "👉 请重新登录 NodeLoc 并更新 Cookie"
+            )
             return
 
-        # ===== 点击签到 =====
         log("滚动并点击签到按钮")
         await page.evaluate(
             """
@@ -212,10 +177,19 @@ async def main():
         await browser.close()
         log("浏览器已关闭")
 
-        # ===== 最终判定 =====
+        # ===== 最终判定（只基于接口 message）=====
         if not checkin["hit"]:
             send_tg(
-                "❌ <b>NodeLoc 签到未触发（未检测到接口）</b>\n\n"
+                "❌ <b>NodeLoc 签到未触发</b>\n\n"
+                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
+                f"🕒 时间：{now}\n\n"
+                "⚠️ 未捕获到 /checkin 接口"
+            )
+            return
+
+        if checkin["status"] == "already":
+            send_tg(
+                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
                 f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
                 f"🕒 时间：{now}"
             )
@@ -229,20 +203,12 @@ async def main():
             )
             return
 
-        if checkin["status"] == "already":
-            send_tg(
-                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
-                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                f"🕒 时间：{now}"
-            )
-            return
-
-        # 兜底
+        # 兜底：接口返回但语义未知
         send_tg(
             "⚠️ <b>NodeLoc 签到状态未知</b>\n\n"
             f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
             f"🕒 时间：{now}\n\n"
-            f"<code>{str(checkin['raw'])[:1000]}</code>"
+            f"<code>{checkin['message']}</code>"
         )
 
 
