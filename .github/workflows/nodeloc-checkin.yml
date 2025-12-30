@@ -1,33 +1,31 @@
-name: NodeLoc Checkin (Python Playwright)
+name: NodeLoc Auto Checkin
 
 on:
-  workflow_dispatch: {}
   schedule:
-    # 每天北京时间 09:00 运行
-    # GitHub Actions 使用 UTC，这里是 UTC+8 → 01:00 UTC
-    - cron: "0 1 * * *"
+    # 每天北京时间 08:10（UTC 00:10）
+    - cron: '10 0 * * *'
+  workflow_dispatch:
 
 jobs:
   checkin:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install playwright requests
-          python -m playwright install chromium
+          pip install -r scripts/requirements.txt
+          playwright install chromium
+          playwright install-deps
 
-      - name: Run NodeLoc checkin
+      - name: Run NodeLoc Checkin
         env:
           NODELOC_COOKIE: ${{ secrets.NODELOC_COOKIE }}
           NODELOC_LOGIN_EMAIL: ${{ secrets.NODELOC_LOGIN_EMAIL }}
