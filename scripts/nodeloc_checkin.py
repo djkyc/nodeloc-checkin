@@ -3,13 +3,11 @@ import time
 import os
 import requests
 from playwright.async_api import async_playwright, TimeoutError
-from http.cookies import SimpleCookie
 
 BASE = "https://www.nodeloc.com"
 LOGIN_URL = "https://www.nodeloc.com/login"
 CHECKIN_API = f"{BASE}/checkin"
 
-# ===== GitHub Actions Secrets =====
 NODELOC_USERNAME = os.getenv("NODELOC_USERNAME")
 NODELOC_PASSWORD = os.getenv("NODELOC_PASSWORD")
 
@@ -53,23 +51,35 @@ async def login_and_get_cookies():
         page = await context.new_page()
 
         log("打开登录页面")
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(3000)
+        await page.goto(LOGIN_URL, wait_until="networkidle")
+
+        # ===== 等待 Discourse 登录弹层 =====
+        log("等待账号输入框（Discourse 标准 ID）")
+        try:
+            await page.wait_for_selector("#login-account-name", timeout=20000)
+        except TimeoutError:
+            log("❌ 未找到账号输入框 #login-account-name")
+            await browser.close()
+            return None
 
         log("输入账号")
-        await page.fill('input[name="login"]', NODELOC_USERNAME)
+        await page.fill("#login-account-name", NODELOC_USERNAME)
+
+        log("等待密码输入框")
+        await page.wait_for_selector("#login-account-password", timeout=10000)
 
         log("输入密码")
-        await page.fill('input[name="password"]', NODELOC_PASSWORD)
+        await page.fill("#login-account-password", NODELOC_PASSWORD)
 
-        log("提交登录")
-        await page.click('button[type="submit"]')
+        log("点击登录按钮")
+        await page.click("button.login-button")
 
+        log("等待跳转首页")
         try:
-            await page.wait_for_url(BASE + "/", timeout=20000)
+            await page.wait_for_url(BASE + "/", timeout=30000)
             log("登录成功")
         except TimeoutError:
-            log("❌ 登录失败")
+            log("❌ 登录失败，未跳转首页")
             await browser.close()
             return None
 
@@ -127,7 +137,7 @@ def do_checkin(cookies):
 
 
 async def main():
-    log("====== NodeLoc 自动签到开始（不手动提供 Cookie） ======")
+    log("====== NodeLoc 自动签到开始（账号密码登录） ======")
 
     if not NODELOC_USERNAME or not NODELOC_PASSWORD:
         log("❌ 未设置账号或密码")
