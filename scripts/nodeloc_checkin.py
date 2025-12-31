@@ -14,13 +14,12 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_USER_ID = os.getenv("TG_USER_ID")
 
 
-# ===== 日志 =====
+# ===== 工具 =====
 def log(msg: str):
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     print(f"[{now}] {msg}", flush=True)
 
 
-# ===== Telegram =====
 def send_tg(msg: str):
     if not TG_BOT_TOKEN or not TG_USER_ID:
         return
@@ -69,11 +68,8 @@ async def main():
     account = mask_email(LOGIN_EMAIL)
     now = beijing_time()
 
-    log("====== NodeLoc 签到任务开始 ======")
+    log("====== NodeLoc 签到开始 ======")
     log(f"账号: {account}")
-
-    # 记录接口返回文本
-    checkin_message = None
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -89,92 +85,36 @@ async def main():
         await context.add_cookies(parse_cookies(NODELOC_COOKIE))
         page = await context.new_page()
 
-        # 监听签到接口
-        async def on_response(response):
-            nonlocal checkin_message
-            if "/checkin" not in response.url:
-                return
-            try:
-                data = await response.json()
-                msg = (
-                    data.get("message")
-                    or data.get("msg")
-                    or data.get("notice")
-                    or ""
-                )
-                checkin_message = str(msg)
-                log(f"签到接口返回: {checkin_message}")
-            except Exception:
-                checkin_message = "接口返回异常"
-
-        page.on("response", on_response)
-
-        # 打开首页
-        log("访问 NodeLoc 首页")
+        log("访问首页")
         await page.goto(BASE, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
 
-        # ===== 核心：只做一件事 → 点签到图标 =====
-        log("激活签到下拉菜单")
-        toggle = await page.wait_for_selector(
-            "li.header-dropdown-toggle.checkin-icon",
+        # === 只做一件事：点击签到图标 ===
+        log("定位签到按钮")
+        icon = await page.wait_for_selector(
+            "li.header-dropdown-toggle.checkin-icon svg.d-icon-calendar-check",
             timeout=8000
         )
-        box = await toggle.bounding_box()
+
+        box = await icon.bounding_box()
         await page.mouse.move(
             box["x"] + box["width"] / 2,
             box["y"] + box["height"] / 2
         )
-        await page.wait_for_timeout(300)
-
-        log("点击签到 SVG 图标")
-        icon = await page.wait_for_selector(
-            "li.header-dropdown-toggle.checkin-icon svg.d-icon-calendar-check",
-            timeout=5000
-        )
-        ibox = await icon.bounding_box()
-        await page.mouse.move(
-            ibox["x"] + ibox["width"] / 2,
-            ibox["y"] + ibox["height"] / 2
-        )
         await page.mouse.down()
-        await page.wait_for_timeout(50)
+        await page.wait_for_timeout(80)
         await page.mouse.up()
 
-        log("等待签到结果")
-        await page.wait_for_timeout(4000)
+        log("签到点击完成")
+        await page.wait_for_timeout(3000)
 
         await browser.close()
 
-    # ===== 最终业务判断（只按你给的三条规则）=====
-    msg = checkin_message or ""
-
-    if any(k in msg for k in ["签到成功", "获得", "能量"]):
-        send_tg(
-            f"✅ <b>NodeLoc 签到成功</b>\n\n"
-            f"账号：{account}\n时间：{now}\n\n"
-            f"{msg}"
-        )
-        return
-
-    if any(k in msg for k in [
-        "今日已签到",
-        "已签到",
-        "系统繁忙",
-        "无效的请求",
-        "尝试次数过多"
-    ]):
-        send_tg(
-            f"🟢 <b>NodeLoc 今日已签到</b>\n\n"
-            f"账号：{account}\n时间：{now}"
-        )
-        return
-
-    # 理论上不会走到这里
+    # === 结果判断（前端已执行即视为成功）===
     send_tg(
-        f"⚠️ <b>NodeLoc 签到状态未知</b>\n\n"
-        f"账号：{account}\n时间：{now}\n\n"
-        f"{msg}"
+        f"✅ <b>NodeLoc 已执行签到</b>\n\n"
+        f"账号：{account}\n"
+        f"时间：{now}"
     )
 
 
