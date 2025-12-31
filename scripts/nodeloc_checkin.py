@@ -6,7 +6,7 @@ from http.cookies import SimpleCookie
 BASE = "https://www.nodeloc.com"
 CHECKIN_API = f"{BASE}/checkin"
 
-# 你已经提供的 cookie（来自环境变量）
+# 你已经在 GitHub Actions 里提供的 cookie
 NODELOC_COOKIE = os.getenv("NODELOC_COOKIE")
 
 
@@ -19,14 +19,19 @@ def build_cookiejar(cookie_str: str):
     sc = SimpleCookie()
     sc.load(cookie_str)
     for k, v in sc.items():
-        jar.set(k, v.value, domain="www.nodeloc.com", path="/")
+        jar.set(
+            k,
+            v.value,
+            domain="www.nodeloc.com",
+            path="/"
+        )
     return jar
 
 
 def extract_csrf(jar):
-    for k in jar:
-        if k.lower() == "csrf_token":
-            return jar[k]
+    for cookie in jar:
+        if cookie.name == "csrf_token":
+            return cookie.value
     return None
 
 
@@ -51,13 +56,13 @@ def main():
 
     csrf = extract_csrf(session.cookies)
     if not csrf:
-        log("❌ Cookie 中未找到 csrf_token，无法签到")
+        log("❌ Cookie 中未找到 csrf_token，请确认 cookie 是否完整")
         return
 
+    log(f"已获取 csrf_token: {csrf[:6]}***")
     session.headers["X-CSRF-Token"] = csrf
-    log("CSRF Token 已设置")
 
-    log("发送签到请求")
+    log("发送签到请求 /checkin")
     resp = session.post(CHECKIN_API, timeout=10)
 
     log(f"HTTP 状态码: {resp.status_code}")
