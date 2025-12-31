@@ -1,78 +1,52 @@
-import asyncio
-import time
-import os
-from playwright.async_api import async_playwright, TimeoutError
+import asyncio, time, os
+from playwright.async_api import async_playwright
 
 BASE = "https://www.nodeloc.com"
-LOGIN_URL = "https://www.nodeloc.com/login"
+LOGIN = BASE + "/login"
+U = os.getenv("NODELOC_USERNAME")
+P = os.getenv("NODELOC_PASSWORD")
 
-NODELOC_USERNAME = os.getenv("NODELOC_USERNAME")
-NODELOC_PASSWORD = os.getenv("NODELOC_PASSWORD")
-
-
-def log(msg):
-    print(time.strftime("[%Y-%m-%d %H:%M:%S]"), msg, flush=True)
-
+def log(m): print(time.strftime("[%Y-%m-%d %H:%M:%S]"), m, flush=True)
 
 async def main():
-    log("====== NodeLoc 自动签到开始 ======")
-
+    log("NodeLoc check-in start")
     async with async_playwright() as p:
-        log("启动 headless Chromium（GitHub Actions）")
-        browser = await p.chromium.launch(
+        b = await p.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
+        c = await b.new_context()
+        page = await c.new_page()
 
-        context = await browser.new_context()
-        page = await context.new_page()
+        await page.goto(LOGIN, wait_until="domcontentloaded")
+        await page.wait_for_selector("#login-account-name")
+        await page.fill("#login-account-name", U)
+        await page.fill("#login-account-password", P)
+        await page.click("#login-button")
+        await page.wait_for_url(BASE + "/")
 
-        # 1️⃣ 打开登录页
-        log("打开登录页面 /login")
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+        btn = await page.wait_for_selector(
+            "li.header-dropdown-toggle.checkin-icon > button.checkin-button"
+        )
+        t1 = await btn.get_attribute("title")
+        a1 = await btn.get_attribute("aria-label")
+        log(f"Before: {t1}/{a1}")
+
+        await btn.click(delay=120)
         await page.wait_for_timeout(2000)
 
-        # 2️⃣ 等账号输入框（【关键】）
-        log("等待账号输入框 #login-account-name")
-        await page.wait_for_selector("#login-account-name", timeout=30000)
-
-        log("输入账号")
-        await page.fill("#login-account-name", NODELOC_USERNAME)
-
-        # 3️⃣ 等密码输入框
-        log("等待密码输入框 #login-account-password")
-        await page.wait_for_selector("#login-account-password", timeout=30000)
-
-        log("输入密码")
-        await page.fill("#login-account-password", NODELOC_PASSWORD)
-
-        # 4️⃣ 点击登录
-        log("点击登录按钮 #login-button")
-        await page.click("#login-button")
-
-        # 5️⃣ 等待跳转首页
-        log("等待跳转回首页")
-        await page.wait_for_url(BASE + "/", timeout=30000)
-        log("登录成功，已进入首页")
-
-        # 6️⃣ 查找签到按钮
-        log("查找签到按钮")
-        btn = await page.wait_for_selector(
-            "button.checkin-button",
-            timeout=30000
+        btn2 = await page.query_selector(
+            "li.header-dropdown-toggle.checkin-icon > button.checkin-button"
         )
+        if not btn2:
+            log("OK: button disappeared")
+        else:
+            t2 = await btn2.get_attribute("title")
+            a2 = await btn2.get_attribute("aria-label")
+            log(f"After: {t2}/{a2}")
+            log("OK" if (t1, a1) != (t2, a2) else "No change (maybe already checked in)")
 
-        # 7️⃣ 点击签到
-        log("点击签到按钮")
-        await btn.click(delay=100)
+        await b.close()
+    log("NodeLoc check-in end")
 
-        log("签到完成，等待 3 秒")
-        await page.wait_for_timeout(3000)
-
-        await browser.close()
-
-    log("====== NodeLoc 自动签到结束 ======")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
