@@ -1,31 +1,25 @@
-import asyncio
-import time
 import os
+import time
 import requests
-from playwright.async_api import async_playwright
 from http.cookies import SimpleCookie
 
 BASE = "https://www.nodeloc.com"
-LOGIN_URL = "https://www.nodeloc.com/login"
 CHECKIN_API = f"{BASE}/checkin"
 
-NODELOC_USERNAME = os.getenv("NODELOC_USERNAME")
-NODELOC_PASSWORD = os.getenv("NODELOC_PASSWORD")
+# 你已经提供的 cookie（来自环境变量）
+NODELOC_COOKIE = os.getenv("NODELOC_COOKIE")
 
 
 def log(msg):
     print(time.strftime("[%Y-%m-%d %H:%M:%S]"), msg, flush=True)
 
 
-def cookies_to_jar(cookies):
+def build_cookiejar(cookie_str: str):
     jar = requests.cookies.RequestsCookieJar()
-    for c in cookies:
-        jar.set(
-            c["name"],
-            c["value"],
-            domain=c.get("domain", "www.nodeloc.com"),
-            path=c.get("path", "/")
-        )
+    sc = SimpleCookie()
+    sc.load(cookie_str)
+    for k, v in sc.items():
+        jar.set(k, v.value, domain="www.nodeloc.com", path="/")
     return jar
 
 
@@ -36,61 +30,34 @@ def extract_csrf(jar):
     return None
 
 
-async def main():
-    log("====== NodeLoc 自动签到开始（最终稳定方案） ======")
+def main():
+    log("====== NodeLoc 自动签到开始（直接使用 cookie） ======")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
-        context = await browser.new_context()
-        page = await context.new_page()
+    if not NODELOC_COOKIE:
+        log("❌ 未提供 NODELOC_COOKIE")
+        return
 
-        # 登录
-        log("打开登录页面")
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        await page.wait_for_selector("#login-account-name")
-
-        log("输入账号")
-        await page.fill("#login-account-name", NODELOC_USERNAME)
-
-        log("输入密码")
-        await page.fill("#login-account-password", NODELOC_PASSWORD)
-
-        log("提交登录")
-        await page.click("#login-button")
-
-        log("等待进入首页")
-        await page.wait_for_url(BASE + "/", timeout=30000)
-        log("登录成功")
-
-        # 取 cookie
-        cookies = await context.cookies()
-        log(f"获取 Cookie 数量: {len(cookies)}")
-
-        await browser.close()
-
-    # ===== 后端签到 =====
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
         "Referer": BASE,
         "Origin": BASE,
-        "Accept": "application/json"
     })
 
-    jar = cookies_to_jar(cookies)
+    jar = build_cookiejar(NODELOC_COOKIE)
     session.cookies.update(jar)
+    log(f"已加载 Cookie 数量: {len(session.cookies)}")
 
     csrf = extract_csrf(session.cookies)
     if not csrf:
-        log("❌ 未找到 csrf_token，无法签到")
+        log("❌ Cookie 中未找到 csrf_token，无法签到")
         return
 
     session.headers["X-CSRF-Token"] = csrf
+    log("CSRF Token 已设置")
 
-    log("发送签到请求 /checkin")
+    log("发送签到请求")
     resp = session.post(CHECKIN_API, timeout=10)
 
     log(f"HTTP 状态码: {resp.status_code}")
@@ -100,4 +67,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
