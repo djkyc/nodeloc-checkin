@@ -50,15 +50,17 @@ async def login_and_get_cookies():
         context = await browser.new_context()
         page = await context.new_page()
 
-        log("打开登录页面")
-        await page.goto(LOGIN_URL, wait_until="networkidle")
+        log("打开登录页面（domcontentloaded）")
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
-        # ===== 等待 Discourse 登录弹层 =====
-        log("等待账号输入框（Discourse 标准 ID）")
+        # ⚠️ Discourse 登录弹层是异步渲染的，给它时间
+        await page.wait_for_timeout(2000)
+
+        log("等待账号输入框 #login-account-name")
         try:
             await page.wait_for_selector("#login-account-name", timeout=20000)
         except TimeoutError:
-            log("❌ 未找到账号输入框 #login-account-name")
+            log("❌ 未找到账号输入框（可能被 Cloudflare / 登录方式变化）")
             await browser.close()
             return None
 
