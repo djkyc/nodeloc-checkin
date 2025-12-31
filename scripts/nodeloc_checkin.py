@@ -7,12 +7,13 @@ from playwright.async_api import async_playwright
 BASE = "https://www.nodeloc.com"
 
 NODELOC_COOKIE = os.getenv("NODELOC_COOKIE", "")
-LOGIN_EMAIL = os.getenv("NODELOC_LOGIN_EMAIL", "")
+LOGIN_EMAIL = os.getenv("LOGIN_EMAIL", "")
 
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_USER_ID = os.getenv("TG_USER_ID")
 
 
+# ===== 工具函数 =====
 def log(msg: str):
     print(time.strftime("[%Y-%m-%d %H:%M:%S] "), msg, flush=True)
 
@@ -39,7 +40,7 @@ def mask_email(email: str):
     return u[:2] + "***@" + d
 
 
-def parse_cookies(cookie_str):
+def parse_cookies(cookie_str: str):
     cookies = []
     for part in cookie_str.split(";"):
         if "=" in part:
@@ -53,6 +54,7 @@ def parse_cookies(cookie_str):
     return cookies
 
 
+# ===== 主流程 =====
 async def main():
     log("====== NodeLoc 签到开始 ======")
     log(f"账号: {mask_email(LOGIN_EMAIL)}")
@@ -67,40 +69,68 @@ async def main():
             viewport={"width": 1280, "height": 800}
         )
 
+        # 注入 Cookie
         cookies = parse_cookies(NODELOC_COOKIE)
         log(f"注入 Cookie 数量: {len(cookies)}")
         await context.add_cookies(cookies)
 
         page = await context.new_page()
+
         log("访问首页")
         await page.goto(BASE, wait_until="domcontentloaded")
         await page.wait_for_timeout(4000)
 
-        # === 找到签到 button ===
-        log("查找签到按钮")
-        btn = await page.wait_for_selector(
-            "li.header-dropdown-toggle.checkin-icon button.checkin-button",
-            timeout=8000
+        # === 读取当前签到状态 ===
+        title_before = await page.get_attribute(
+            "button.checkin-button",
+            "title"
         )
+        log(f"当前按钮 title: {title_before}")
 
-        box = await btn.bounding_box()
-        x = box["x"] + box["width"] / 2
-        y = box["y"] + box["height"] / 2
+        if not title_before:
+            log("未找到签到按钮，可能未登录")
+            return
 
-        log("模拟真实鼠标点击（down/up）")
-        await page.mouse.move(x, y)
-        await page.wait_for_timeout(200)
-        await page.mouse.down()
-        await page.wait_for_timeout(120)
-        await page.mouse.up()
+        if "今日签到" not in title_before:
+            log("检测为已签到状态，跳过")
+            send_tg(
+                f"🟢 <b>NodeLoc 今日已签到</b>\n\n"
+                f"账号：{mask_email(LOGIN_EMAIL)}"
+            )
+            return
 
-        log("鼠标事件已发送，等待前端处理")
+        # === 关键：在页面上下文触发真实事件链 ===
+        log("执行签到事件链")
+        result = await page.evaluate("""
+        () => {
+            const btn = document.querySelector("button.checkin-button");
+            if (!btn) return "NO_BUTTON";
+
+            btn.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+            btn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+            btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+            btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+            btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+            return "EVENT_SENT";
+        }
+        """)
+
+        log(f"事件执行结果: {result}")
+
         await page.wait_for_timeout(4000)
+
+        # === 再次读取状态 ===
+        title_after = await page.get_attribute(
+            "button.checkin-button",
+            "title"
+        )
+        log(f"点击后按钮 title: {title_after}")
 
         await browser.close()
 
     send_tg(
-        "✅ <b>NodeLoc 已执行签到点击</b>\n\n"
+        f"✅ <b>NodeLoc 已尝试执行签到</b>\n\n"
         f"账号：{mask_email(LOGIN_EMAIL)}\n"
         f"时间：{time.strftime('%Y-%m-%d %H:%M:%S')}"
     )
