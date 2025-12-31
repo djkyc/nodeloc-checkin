@@ -6,7 +6,6 @@ from playwright.async_api import async_playwright
 
 BASE = "https://www.nodeloc.com"
 
-# ===== 配置 =====
 NODELOC_COOKIE = os.getenv("NODELOC_COOKIE", "")
 LOGIN_EMAIL = os.getenv("NODELOC_LOGIN_EMAIL", "")
 
@@ -14,7 +13,6 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_USER_ID = os.getenv("TG_USER_ID")
 
 
-# ===== 工具 =====
 def log(msg: str):
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     print(f"[{now}] {msg}", flush=True)
@@ -63,7 +61,6 @@ def parse_cookies(cookie_str: str):
     return cookies
 
 
-# ===== 主流程 =====
 async def main():
     account = mask_email(LOGIN_EMAIL)
     now = beijing_time()
@@ -82,35 +79,31 @@ async def main():
         )
 
         # 注入 Cookie
-        await context.add_cookies(parse_cookies(NODELOC_COOKIE))
+        cookies = parse_cookies(NODELOC_COOKIE)
+        log(f"注入 Cookie 数量: {len(cookies)}")
+        await context.add_cookies(cookies)
+
         page = await context.new_page()
 
         log("访问首页")
         await page.goto(BASE, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
 
-        # === 只做一件事：点击签到图标 ===
-        log("定位签到按钮")
-        icon = await page.wait_for_selector(
-            "li.header-dropdown-toggle.checkin-icon svg.d-icon-calendar-check",
+        # === 核心：点 button，而不是 svg ===
+        log("定位签到按钮 button")
+        button = await page.wait_for_selector(
+            "li.header-dropdown-toggle.checkin-icon button.checkin-button",
             timeout=8000
         )
 
-        box = await icon.bounding_box()
-        await page.mouse.move(
-            box["x"] + box["width"] / 2,
-            box["y"] + box["height"] / 2
-        )
-        await page.mouse.down()
-        await page.wait_for_timeout(80)
-        await page.mouse.up()
+        log("点击签到按钮")
+        await button.click(delay=80)
 
-        log("签到点击完成")
+        log("签到点击完成，等待前端状态更新")
         await page.wait_for_timeout(3000)
 
         await browser.close()
 
-    # === 结果判断（前端已执行即视为成功）===
     send_tg(
         f"✅ <b>NodeLoc 已执行签到</b>\n\n"
         f"账号：{account}\n"
