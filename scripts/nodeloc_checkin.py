@@ -150,43 +150,50 @@ async def main():
         await page.goto(BASE, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
 
-        # ===== 定位签到 SVG（真正的 action 绑定点）=====
-        log("查找签到 SVG 图标")
-        icon = await page.wait_for_selector(
-            "li.header-dropdown-toggle.checkin-icon svg.d-icon-calendar-check",
+        # ===== Step 1：hover 激活签到 dropdown =====
+        log("激活签到 dropdown（hover）")
+
+        toggle = await page.wait_for_selector(
+            "li.header-dropdown-toggle.checkin-icon",
             timeout=8000
         )
 
-        if not icon:
-            log("未找到签到 SVG 图标")
-            await browser.close()
-            send_tg(
-                "❌ <b>NodeLoc 未找到签到入口</b>\n\n"
-                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                f"🕒 时间：{now}"
-            )
-            return
+        await toggle.scroll_into_view_if_needed()
+        toggle_box = await toggle.bounding_box()
+        if not toggle_box:
+            raise RuntimeError("无法获取签到 dropdown 位置")
 
-        # ===== 真实鼠标点击 SVG（核心）=====
-        log("准备点击签到 SVG 图标")
+        tx = toggle_box["x"] + toggle_box["width"] / 2
+        ty = toggle_box["y"] + toggle_box["height"] / 2
+
+        await page.mouse.move(tx, ty)
+        await page.wait_for_timeout(300)
+
+        # ===== Step 2：点击 SVG 图标（真正 action）=====
+        log("点击签到 SVG 图标（calendar-check）")
+
+        icon = await page.wait_for_selector(
+            "li.header-dropdown-toggle.checkin-icon svg.d-icon-calendar-check",
+            timeout=5000
+        )
 
         await icon.scroll_into_view_if_needed()
-        box = await icon.bounding_box()
-        if not box:
-            raise RuntimeError("无法获取签到 SVG 图标位置")
+        icon_box = await icon.bounding_box()
+        if not icon_box:
+            raise RuntimeError("无法获取签到 SVG 位置")
 
-        x = box["x"] + box["width"] / 2
-        y = box["y"] + box["height"] / 2
+        ix = icon_box["x"] + icon_box["width"] / 2
+        iy = icon_box["y"] + icon_box["height"] / 2
 
-        await page.mouse.move(x, y)
-        await page.wait_for_timeout(200)
+        await page.mouse.move(ix, iy)
+        await page.wait_for_timeout(150)
         await page.mouse.down()
         await page.wait_for_timeout(50)
         await page.mouse.up()
 
-        log("已发送真实鼠标点击（SVG）")
+        log("已在激活的 dropdown 中点击签到 SVG")
 
-        # ===== 等待接口返回 =====
+        # ===== 等待接口 =====
         log("等待签到接口响应")
         await page.wait_for_timeout(4000)
 
