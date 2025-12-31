@@ -69,21 +69,6 @@ def parse_cookies(cookie_str: str):
     return cookies
 
 
-# ===== 前置 DOM 判断：是否已签到 =====
-async def dom_already_checked(page) -> bool:
-    return await page.evaluate("""
-        () => {
-            const b = document.querySelector("button.checkin-button");
-            if (!b) return false;
-            return (
-                b.classList.contains("checked-in") ||
-                (b.getAttribute("title") || "").includes("已签到") ||
-                (b.getAttribute("aria-label") || "").includes("已签到")
-            );
-        }
-    """)
-
-
 # ===== 主流程 =====
 async def main():
     account = mask_email(LOGIN_EMAIL) if LOGIN_EMAIL else "（邮箱未配置）"
@@ -92,10 +77,10 @@ async def main():
     log("====== NodeLoc 签到任务开始 ======")
     log(f"账号：{account}")
 
-    # 接口判定结果（权威）
+    # 接口判定结果（唯一权威）
     checkin = {
-        "hit": False,     # 是否捕获到 /checkin
-        "status": None,  # success / already / failed
+        "hit": False,
+        "status": None,   # success / already / failed
         "message": ""
     }
 
@@ -145,10 +130,19 @@ async def main():
             log(f"签到接口 message：{msg}")
 
             # ===== 终局语义判定 =====
-            if any(k in msg for k in ["已签到", "今天已经签到", "无效的请求", "重复", "尝试次数过多"]):
+            if any(k in msg for k in [
+                "已签到",
+                "今天已经签到",
+                "无效的请求",
+                "重复",
+                "系统繁忙",
+                "尝试次数过多"
+            ]):
                 checkin["status"] = "already"
+
             elif any(k in msg for k in ["签到成功", "成功"]):
                 checkin["status"] = "success"
+
             else:
                 checkin["status"] = "failed"
 
@@ -159,21 +153,8 @@ async def main():
         await page.goto(BASE, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
 
-        log("检查页面初始签到状态")
-        already = await dom_already_checked(page)
-
-        if already:
-            log("页面初始状态：今日已签到（不点击）")
-            await browser.close()
-            send_tg(
-                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
-                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                f"🕒 时间：{now}"
-            )
-            return
-
-        # ===== 未签到：执行点击 =====
-        log("页面显示未签到，准备点击签到按钮")
+        # ===== 查找签到按钮 =====
+        log("查找签到按钮")
         btn = await page.query_selector("button.checkin-button")
 
         if not btn:
@@ -187,7 +168,8 @@ async def main():
             )
             return
 
-        log("滚动并点击签到按钮")
+        # ===== 始终点击一次签到 =====
+        log("点击签到按钮（不判断 DOM 状态）")
         await page.evaluate("""
             () => {
                 const b = document.querySelector("button.checkin-button");
@@ -214,14 +196,6 @@ async def main():
             )
             return
 
-        if checkin["status"] == "already":
-            send_tg(
-                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
-                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
-                f"🕒 时间：{now}"
-            )
-            return
-
         if checkin["status"] == "success":
             send_tg(
                 "✅ <b>NodeLoc 今日签到成功</b>\n\n"
@@ -230,7 +204,15 @@ async def main():
             )
             return
 
-        # 兜底：接口返回但语义未知
+        if checkin["status"] == "already":
+            send_tg(
+                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
+                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
+                f"🕒 时间：{now}"
+            )
+            return
+
+        # ===== 兜底 =====
         send_tg(
             "⚠️ <b>NodeLoc 签到状态未知</b>\n\n"
             f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
