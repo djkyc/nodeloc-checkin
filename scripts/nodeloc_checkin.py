@@ -69,6 +69,21 @@ def parse_cookies(cookie_str: str):
     return cookies
 
 
+# ===== 前置 DOM 判断：是否已签到 =====
+async def dom_already_checked(page) -> bool:
+    return await page.evaluate("""
+        () => {
+            const b = document.querySelector("button.checkin-button");
+            if (!b) return false;
+            return (
+                b.classList.contains("checked-in") ||
+                (b.getAttribute("title") || "").includes("已签到") ||
+                (b.getAttribute("aria-label") || "").includes("已签到")
+            );
+        }
+    """)
+
+
 # ===== 主流程 =====
 async def main():
     account = mask_email(LOGIN_EMAIL) if LOGIN_EMAIL else "（邮箱未配置）"
@@ -77,11 +92,11 @@ async def main():
     log("====== NodeLoc 签到任务开始 ======")
     log(f"账号：{account}")
 
-    # 用于保存接口判定结果
+    # 接口判定结果（权威）
     checkin = {
-        "hit": False,      # 是否捕获到 /checkin
-        "status": None,   # success / already / failed
-        "message": ""     # 接口 message（权威）
+        "hit": False,     # 是否捕获到 /checkin
+        "status": None,  # success / already / failed
+        "message": ""
     }
 
     async with async_playwright() as p:
@@ -103,7 +118,7 @@ async def main():
 
         page = await context.new_page()
 
-        # ===== 只监听真正的签到接口 =====
+        # ===== 接口监听（最终权威判断）=====
         async def on_response(response):
             if "/checkin" not in response.url:
                 return
@@ -118,7 +133,6 @@ async def main():
                 checkin["status"] = "failed"
                 return
 
-            # NodeLoc / Discourse 插件：message 才是唯一权威
             msg = (
                 data.get("message")
                 or data.get("msg")
@@ -130,21 +144,36 @@ async def main():
 
             log(f"签到接口 message：{msg}")
 
-            # ===== 严格判断顺序（非常重要）=====
-            if "已签到" in msg or "今天已经签到" in msg:
+            # ===== 终局语义判定 =====
+            if any(k in msg for k in ["已签到", "今天已经签到", "无效的请求", "重复", "尝试次数过多"]):
                 checkin["status"] = "already"
-            elif "签到成功" in msg or "成功" in msg:
+            elif any(k in msg for k in ["签到成功", "成功"]):
                 checkin["status"] = "success"
             else:
                 checkin["status"] = "failed"
 
         page.on("response", on_response)
 
+        # ===== 打开首页 =====
         log("访问 NodeLoc 首页")
         await page.goto(BASE, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
 
-        log("查找签到按钮")
+        log("检查页面初始签到状态")
+        already = await dom_already_checked(page)
+
+        if already:
+            log("页面初始状态：今日已签到（不点击）")
+            await browser.close()
+            send_tg(
+                "🟢 <b>NodeLoc 今日已签到</b>\n\n"
+                f"📧 账号：<a href=\"mailto:{account}\">{account}</a>\n"
+                f"🕒 时间：{now}"
+            )
+            return
+
+        # ===== 未签到：执行点击 =====
+        log("页面显示未签到，准备点击签到按钮")
         btn = await page.query_selector("button.checkin-button")
 
         if not btn:
@@ -159,8 +188,7 @@ async def main():
             return
 
         log("滚动并点击签到按钮")
-        await page.evaluate(
-            """
+        await page.evaluate("""
             () => {
                 const b = document.querySelector("button.checkin-button");
                 if (b) {
@@ -168,8 +196,7 @@ async def main():
                     b.click();
                 }
             }
-            """
-        )
+        """)
 
         log("等待签到接口响应")
         await page.wait_for_timeout(3000)
@@ -177,7 +204,7 @@ async def main():
         await browser.close()
         log("浏览器已关闭")
 
-        # ===== 最终判定（只基于接口 message）=====
+        # ===== 最终判定（只信接口）=====
         if not checkin["hit"]:
             send_tg(
                 "❌ <b>NodeLoc 签到未触发</b>\n\n"
