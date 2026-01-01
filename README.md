@@ -1,7 +1,7 @@
 ```
-curl -fsSL \
-https://raw.githubusercontent.com/djkyc/nodeloc-checkin/refs/heads/main/scripts/vps_nodeloc_checkin.py \
--o /root/nodeloc_checkin.py
+wget -O /root/nodeloc_checkin.py \
+https://raw.githubusercontent.com/djkyc/nodeloc-checkin/refs/heads/main/scripts/vps_nodeloc_checkin.py
+
 ```
 ---
 
