@@ -1,22 +1,74 @@
 import asyncio
 import time
 import os
-from playwright.async_api import async_playwright, TimeoutError
+import requests
+from http.cookies import SimpleCookie
+from playwright.async_api import async_playwright
 
 BASE = "https://www.nodeloc.com"
 LOGIN_URL = "https://www.nodeloc.com/login"
+CHECKIN_API = f"{BASE}/checkin"
 
-# GitHub Actions Secrets
 NODELOC_USERNAME = os.getenv("NODELOC_USERNAME")
 NODELOC_PASSWORD = os.getenv("NODELOC_PASSWORD")
+NODELOC_COOKIE = os.getenv("NODELOC_COOKIE")
 
 
 def log(msg):
     print(time.strftime("[%Y-%m-%d %H:%M:%S]"), msg, flush=True)
 
 
+def build_cookiejar(cookie_str: str):
+    jar = requests.cookies.RequestsCookieJar()
+    sc = SimpleCookie()
+    sc.load(cookie_str)
+    for k, v in sc.items():
+        jar.set(k, v.value, domain="www.nodeloc.com", path="/")
+    return jar
+
+
+def extract_csrf(jar):
+    for cookie in jar:
+        if cookie.name == "csrf_token":
+            return cookie.value
+    return None
+
+
+def api_checkin():
+    log("➡️ 使用 Cookie 接口方式签到")
+
+    if not NODELOC_COOKIE:
+        log("❌ 未提供 NODELOC_COOKIE，接口签到不可用")
+        return
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Referer": BASE,
+        "Origin": BASE,
+    })
+
+    jar = build_cookiejar(NODELOC_COOKIE)
+    session.cookies.update(jar)
+
+    csrf = extract_csrf(session.cookies)
+    if not csrf:
+        log("❌ Cookie 中未找到 csrf_token，无法接口签到")
+        return
+
+    session.headers["X-CSRF-Token"] = csrf
+    log("CSRF Token 已设置")
+
+    resp = session.post(CHECKIN_API, timeout=10)
+    log(f"接口返回状态码: {resp.status_code}")
+    log(f"接口返回内容: {resp.text}")
+
+
 async def main():
     log("====== NodeLoc 自动签到开始 ======")
+
+    ui_success = False
 
     async with async_playwright() as p:
         log("启动 headless Chromium（GitHub Actions）")
@@ -33,67 +85,53 @@ async def main():
         await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # 2️⃣ 等账号输入框（基于你给的 F12，唯一正确）
+        # 2️⃣ 登录
         log("等待账号输入框 #login-account-name")
         await page.wait_for_selector("#login-account-name", timeout=30000)
-
         log("输入账号")
         await page.fill("#login-account-name", NODELOC_USERNAME)
 
-        # 3️⃣ 等密码输入框
         log("等待密码输入框 #login-account-password")
         await page.wait_for_selector("#login-account-password", timeout=30000)
-
         log("输入密码")
         await page.fill("#login-account-password", NODELOC_PASSWORD)
 
-        # 4️⃣ 点击登录
         log("点击登录按钮 #login-button")
         await page.click("#login-button")
 
-        # 5️⃣ 等回到首页（这是登录成功的铁证）
         log("等待跳转回首页")
         await page.wait_for_url(BASE + "/", timeout=30000)
         log("登录成功，已进入首页")
 
-        # 6️⃣ 查找【真正的签到按钮：日历图片按钮本体】
+        # 3️⃣ UI 尝试签到
         log("查找签到按钮（图片按钮本体）")
         btn = await page.wait_for_selector(
             "li.header-dropdown-toggle.checkin-icon > button.checkin-button",
             timeout=30000
         )
 
-        # —— 点击前状态
         title_before = await btn.get_attribute("title")
-        aria_before = await btn.get_attribute("aria-label")
-        log(f"签到前状态: title={title_before}, aria-label={aria_before}")
+        log(f"签到前状态: {title_before}")
 
-        # 7️⃣ 点击签到（就是你截图里那个日历图标）
-        log("点击签到按钮")
+        log("点击签到按钮（UI）")
         await btn.click(delay=120)
-
-        # 等前端处理
         await page.wait_for_timeout(2000)
 
-        # —— 点击后状态
-        btn_after = await page.query_selector(
-            "li.header-dropdown-toggle.checkin-icon > button.checkin-button"
-        )
+        title_after = await btn.get_attribute("title")
+        log(f"签到后状态: {title_after}")
 
-        if not btn_after:
-            log("✅ 签到后：按钮消失（判定签到成功）")
+        if title_before != title_after:
+            log("✅ UI 签到成功")
+            ui_success = True
         else:
-            title_after = await btn_after.get_attribute("title")
-            aria_after = await btn_after.get_attribute("aria-label")
-            log(f"签到后状态: title={title_after}, aria-label={aria_after}")
+            log("⚠️ UI 签到未生效")
 
-            if title_before != title_after or aria_before != aria_after:
-                log("✅ 签到状态发生变化（判定签到成功）")
-            else:
-                log("⚠️ 签到按钮状态未变化（可能已签到或当日无变化）")
-
-        await page.wait_for_timeout(2000)
         await browser.close()
+
+    # 4️⃣ UI 不成功 → 接口兜底
+    if not ui_success:
+        log("➡️ UI 未生效，切换接口签到")
+        api_checkin()
 
     log("====== NodeLoc 自动签到结束 ======")
 
