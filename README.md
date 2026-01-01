@@ -1,3 +1,10 @@
+```
+curl -fsSL \
+https://raw.githubusercontent.com/djkyc/nodeloc-checkin/refs/heads/main/scripts/vps_nodeloc_checkin.py \
+-o /root/nodeloc_checkin.py
+```
+---
+
 仓库 Settings → Secrets and variables → Actions：
 
 🔐 需要的环境变量（最终确认）
