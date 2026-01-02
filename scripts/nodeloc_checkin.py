@@ -57,45 +57,89 @@ async def run_checkin():
             await page.fill("#login-account-password", NODELOC_PASSWORD)
             await page.click("#login-button")
             
-            # 等待登录成功
+            # 等待登录成功跳转
             log("等待登录响应...")
-            await page.wait_for_function(
-                "() => (typeof Discourse !== 'undefined' && Discourse.currentUser) || document.querySelector('.checkin-button')",
-                timeout=30000
-            )
-            log("登录成功！")
-            await page.wait_for_timeout(2000)
+            try:
+                # 等待 URL 变化或特定元素出现
+                await page.wait_for_function(
+                    "() => window.location.href === 'https://www.nodeloc.com/' || document.querySelector('.checkin-button') || document.querySelector('#current-user')",
+                    timeout=30000
+                )
+            except Exception:
+                log("登录跳转等待超时，尝试直接访问首页")
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
+            
+            log("登录成功，正在加载首页数据...")
+            # 关键：多等一会儿，确保 Discourse 核心对象加载完成
+            await page.wait_for_timeout(5000)
             
             # 2. 获取 CSRF Token
             log("获取 CSRF Token...")
             csrf_token = ""
             try:
-                # 尝试从 API 获取
+                # 优先从 API 获取，这样最准确
                 res = await page.request.get(CSRF_URL)
                 csrf_data = await res.json()
                 csrf_token = csrf_data.get("csrf", "")
-            except:
-                # 备选：从页面 meta 获取
+            except Exception as e:
+                log(f"API 获取 CSRF 失败: {e}，尝试从页面提取")
                 csrf_token = await page.evaluate('document.querySelector("meta[name=\'csrf-token\']")?.content')
             
             if not csrf_token:
                 raise RuntimeError("无法获取 CSRF Token")
             
-            # 3. 获取用户信息
+            # 3. 获取用户信息 (增强版)
+            log("正在提取用户信息...")
             user_info = await page.evaluate('''() => {
+                // 方式 1: Discourse 全局对象
                 if (typeof Discourse !== 'undefined' && Discourse.currentUser) {
-                    return { id: Discourse.currentUser.id, username: Discourse.currentUser.username };
+                    return { id: Discourse.currentUser.id, username: Discourse.currentUser.username, source: 'discourse' };
                 }
+                
+                // 方式 2: 从 body 属性获取 (Discourse 常用)
+                const body = document.querySelector('body');
+                const uid = body?.getAttribute('data-current-user-id');
+                if (uid) {
+                    return { id: uid, username: 'User', source: 'body-attr' };
+                }
+                
+                // 方式 3: 从页面 JSON 数据获取
+                const dataElement = document.querySelector('#data-discourse-setup');
+                if (dataElement) {
+                    try {
+                        const data = JSON.parse(dataElement.getAttribute('data-preloaded'));
+                        const currentUser = JSON.parse(data['current_user']);
+                        if (currentUser) {
+                            return { id: currentUser.id, username: currentUser.username, source: 'preloaded-data' };
+                        }
+                    } catch (e) {}
+                }
+                
                 return null;
             }''')
             
             if not user_info:
-                # 备选：从 body 属性获取
-                uid = await page.evaluate('document.querySelector("body").getAttribute("data-current-user-id")')
-                if uid:
-                    user_info = {"id": uid, "username": "User"}
-                else:
-                    raise RuntimeError("无法获取用户信息")
+                # 方式 4: 最后的挣扎，尝试从 API 获取当前用户信息
+                log("尝试通过 API 获取用户信息...")
+                try:
+                    res = await page.request.get("https://www.nodeloc.com/session/current.json")
+                    current_data = await res.json()
+                    if current_data.get('current_user'):
+                        user_info = {
+                            'id': current_data['current_user']['id'],
+                            'username': current_data['current_user']['username'],
+                            'source': 'api'
+                        }
+                except:
+                    pass
+
+            if not user_info:
+                # 记录页面内容以便调试
+                content = await page.content()
+                log(f"页面内容片段: {content[:500]}...")
+                raise RuntimeError("无法获取用户信息，请确认是否登录成功")
+            
+            log(f"用户信息获取成功: {user_info['username']} (ID: {user_info['id']}, 来源: {user_info['source']})")
 
             # 4. 检查是否已签到
             today = time.strftime("%Y-%m-%d")
@@ -112,18 +156,22 @@ async def run_checkin():
             timestamp = int(time.time() * 1000)
             
             result = await page.evaluate(f'''async () => {{
-                const response = await fetch('/checkin', {{
-                    method: 'POST',
-                    headers: {{
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'X-Discourse-Checkin': 'true',
-                        'X-Checkin-Nonce': '{nonce}',
-                        'X-CSRF-Token': '{csrf_token}',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    }},
-                    body: new URLSearchParams({{ 'nonce': '{nonce}', 'timestamp': '{timestamp}' }})
-                }});
-                return await response.json();
+                try {{
+                    const response = await fetch('/checkin', {{
+                        method: 'POST',
+                        headers: {{
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'X-Discourse-Checkin': 'true',
+                            'X-Checkin-Nonce': '{nonce}',
+                            'X-CSRF-Token': '{csrf_token}',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }},
+                        body: new URLSearchParams({{ 'nonce': '{nonce}', 'timestamp': '{timestamp}' }})
+                    }});
+                    return await response.json();
+                } catch (e) {
+                    return { success: false, message: e.message };
+                }
             }}''')
             
             log(f"签到结果: {json.dumps(result, ensure_ascii=False)}")
@@ -153,7 +201,7 @@ async def main():
         except Exception as e:
             log(f"第 {i+1} 次尝试失败: {e}")
             if i < max_retries - 1:
-                wait_time = (i + 1) * 10
+                wait_time = (i + 1) * 15
                 log(f"等待 {wait_time} 秒后重试...")
                 await asyncio.sleep(wait_time)
             else:
