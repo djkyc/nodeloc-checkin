@@ -1,140 +1,254 @@
 import asyncio
 import time
 import os
+import json
+import random
 import requests
-from http.cookies import SimpleCookie
 from playwright.async_api import async_playwright
 
-BASE = "https://www.nodeloc.com"
 LOGIN_URL = "https://www.nodeloc.com/login"
-CHECKIN_API = f"{BASE}/checkin"
+HOME_URL = "https://www.nodeloc.com/"
+CSRF_URL = "https://www.nodeloc.com/session/csrf.json"
+CHECKIN_URL = "https://www.nodeloc.com/checkin"
 
 NODELOC_USERNAME = os.getenv("NODELOC_USERNAME")
 NODELOC_PASSWORD = os.getenv("NODELOC_PASSWORD")
-NODELOC_COOKIE = os.getenv("NODELOC_COOKIE")
+DISPLAY = os.getenv("DISPLAY", ":99")
+
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 
 def log(msg):
     print(time.strftime("[%Y-%m-%d %H:%M:%S]"), msg, flush=True)
 
 
-def build_cookiejar(cookie_str: str):
-    jar = requests.cookies.RequestsCookieJar()
-    sc = SimpleCookie()
-    sc.load(cookie_str)
-    for k, v in sc.items():
-        jar.set(k, v.value, domain="www.nodeloc.com", path="/")
-    return jar
-
-
-def extract_csrf(jar):
-    for cookie in jar:
-        if cookie.name == "csrf_token":
-            return cookie.value
-    return None
-
-
-def api_checkin():
-    log("➡️ 使用 Cookie 接口方式签到")
-
-    if not NODELOC_COOKIE:
-        log("❌ 未提供 NODELOC_COOKIE，接口签到不可用")
+def send_tg(msg):
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+            timeout=10,
+        )
+    except Exception as e:
+        log(f"Telegram 通知发送失败: {e}")
 
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-        "Referer": BASE,
-        "Origin": BASE,
-    })
 
-    jar = build_cookiejar(NODELOC_COOKIE)
-    session.cookies.update(jar)
-
-    csrf = extract_csrf(session.cookies)
-    if not csrf:
-        log("❌ Cookie 中未找到 csrf_token，无法接口签到")
-        return
-
-    session.headers["X-CSRF-Token"] = csrf
-    log("CSRF Token 已设置")
-
-    resp = session.post(CHECKIN_API, timeout=10)
-    log(f"接口返回状态码: {resp.status_code}")
-    log(f"接口返回内容: {resp.text}")
+def generate_nonce():
+    """生成签到所需的 nonce"""
+    part1 = ''.join(random.choices('0123456789abcdefghijklmnopqrstuvwxyz', k=13))
+    part2 = ''.join(random.choices('0123456789abcdefghijklmnopqrstuvwxyz', k=13))
+    return part1 + part2
 
 
 async def main():
-    log("====== NodeLoc 自动签到开始 ======")
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    browser = None
 
-    ui_success = False
+    try:
+        log("====== NodeLoc 自动签到启动 ======")
 
-    async with async_playwright() as p:
-        log("启动 headless Chromium（GitHub Actions）")
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+        async with async_playwright() as p:
+            # 启动浏览器
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
 
-        context = await browser.new_context()
-        page = await context.new_page()
+            # 步骤 1: 打开登录页
+            log("打开登录页面 /login")
+            await page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(2000)
 
-        # 1️⃣ 打开登录页
-        log("打开登录页面 /login")
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(2000)
+            # 步骤 2: 等待登录表单
+            log("等待登录表单加载")
+            await page.wait_for_selector("#login-account-name", timeout=30000)
+            await page.wait_for_selector("#login-account-password", timeout=30000)
+            await page.wait_for_selector("#login-button", timeout=30000)
 
-        # 2️⃣ 登录
-        log("等待账号输入框 #login-account-name")
-        await page.wait_for_selector("#login-account-name", timeout=30000)
-        log("输入账号")
-        await page.fill("#login-account-name", NODELOC_USERNAME)
+            # 步骤 3: 输入用户名和密码
+            log(f"输入用户名: {NODELOC_USERNAME}")
+            await page.fill("#login-account-name", NODELOC_USERNAME)
+            await page.wait_for_timeout(500)
 
-        log("等待密码输入框 #login-account-password")
-        await page.wait_for_selector("#login-account-password", timeout=30000)
-        log("输入密码")
-        await page.fill("#login-account-password", NODELOC_PASSWORD)
+            log("输入密码")
+            await page.fill("#login-account-password", NODELOC_PASSWORD)
+            await page.wait_for_timeout(500)
 
-        log("点击登录按钮 #login-button")
-        await page.click("#login-button")
+            # 步骤 4: 点击登录
+            log("点击登录按钮 #login-button")
+            await page.click("#login-button")
+            
+            # 步骤 5: 等待登录完成
+            log("等待登录成功...")
+            try:
+                # 等待页面跳转或签到按钮出现
+                await page.wait_for_function(
+                    """() => {
+                        return document.querySelector('.checkin-button') !== null ||
+                               window.location.href !== 'https://www.nodeloc.com/login';
+                    }""",
+                    timeout=30000
+                )
+                log("登录成功，页面已跳转")
+            except Exception as e:
+                log(f"等待登录超时，尝试手动导航: {e}")
+                await page.goto(HOME_URL, wait_until="networkidle", timeout=60000)
+            
+            # 等待页面完全加载
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            await page.wait_for_timeout(3000)
 
-        log("等待跳转回首页")
-        await page.wait_for_url(BASE + "/", timeout=30000)
-        log("登录成功，已进入首页")
+            # 步骤 6: 获取 CSRF Token
+            log("获取 CSRF Token...")
+            csrf_response = await page.goto(CSRF_URL, wait_until="networkidle")
+            csrf_text = await csrf_response.text()
+            csrf_data = json.loads(csrf_text)
+            csrf_token = csrf_data.get("csrf", "")
+            log(f"CSRF Token: {csrf_token[:20]}...")
 
-        # 3️⃣ UI 尝试签到
-        log("查找签到按钮（图片按钮本体）")
-        btn = await page.wait_for_selector(
-            "li.header-dropdown-toggle.checkin-icon > button.checkin-button",
-            timeout=30000
-        )
+            # 步骤 7: 获取当前用户信息
+            log("获取当前用户信息...")
+            user_info = await page.evaluate('''() => {
+                if (typeof Discourse !== 'undefined' && Discourse.currentUser) {
+                    return {
+                        id: Discourse.currentUser.id,
+                        username: Discourse.currentUser.username
+                    };
+                }
+                return null;
+            }''')
+            
+            if not user_info:
+                raise RuntimeError("无法获取当前用户信息，登录可能失败")
+            
+            log(f"当前用户: {user_info['username']} (ID: {user_info['id']})")
 
-        title_before = await btn.get_attribute("title")
-        log(f"签到前状态: {title_before}")
+            # 步骤 8: 检查是否已签到
+            log("检查今日签到状态...")
+            today = time.strftime("%Y-%m-%d")
+            checkin_key = f"checkin-{user_info['id']}-{today}"
+            
+            already_checked_in = await page.evaluate(f'''() => {{
+                return localStorage.getItem("{checkin_key}") !== null;
+            }}''')
+            
+            if already_checked_in:
+                log("🟡 今日已签到")
+                await context.close()
+                await browser.close()
+                send_tg(f"🟡 NodeLoc 今日已签到\n{now}")
+                return 0
 
-        log("点击签到按钮（UI）")
-        await btn.click(delay=120)
-        await page.wait_for_timeout(2000)
+            # 步骤 9: 执行签到
+            log("准备签到...")
+            nonce = generate_nonce()
+            timestamp = int(time.time() * 1000)
+            
+            log(f"Nonce: {nonce}")
+            log(f"Timestamp: {timestamp}")
 
-        title_after = await btn.get_attribute("title")
-        log(f"签到后状态: {title_after}")
+            # 获取所有 cookies
+            cookies = await context.cookies()
+            cookie_dict = {c['name']: c['value'] for c in cookies}
+            
+            # 构造签到请求
+            log("发送签到请求到 /checkin")
+            checkin_response = await page.evaluate(f'''async () => {{
+                try {{
+                    const response = await fetch('/checkin', {{
+                        method: 'POST',
+                        headers: {{
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'X-Discourse-Checkin': 'true',
+                            'X-Checkin-Nonce': '{nonce}',
+                            'X-CSRF-Token': '{csrf_token}',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }},
+                        body: new URLSearchParams({{
+                            'nonce': '{nonce}',
+                            'timestamp': '{timestamp}'
+                        }})
+                    }});
+                    
+                    const text = await response.text();
+                    return {{
+                        status: response.status,
+                        ok: response.ok,
+                        body: text
+                    }};
+                }} catch (error) {{
+                    return {{
+                        error: error.message
+                    }};
+                }}
+            }}''')
 
-        if title_before != title_after:
-            log("✅ UI 签到成功")
-            ui_success = True
-        else:
-            log("⚠️ UI 签到未生效")
+            log(f"签到响应: {json.dumps(checkin_response, indent=2, ensure_ascii=False)}")
 
-        await browser.close()
+            # 步骤 10: 处理签到结果
+            if checkin_response.get('error'):
+                raise RuntimeError(f"签到请求失败: {checkin_response['error']}")
+            
+            if checkin_response.get('ok'):
+                try:
+                    result = json.loads(checkin_response['body'])
+                    if result.get('success'):
+                        points = result.get('points', 0)
+                        log(f"✅ 签到成功！获得 {points} 积分")
+                        
+                        # 更新 localStorage
+                        await page.evaluate(f'''() => {{
+                            localStorage.setItem("{checkin_key}", "true");
+                        }}''')
+                        
+                        await context.close()
+                        await browser.close()
+                        send_tg(f"✅ NodeLoc 签到成功\n{now}\n获得 {points} 积分")
+                        return 0
+                    else:
+                        message = result.get('message', '未知错误')
+                        log(f"⚠️ 签到失败: {message}")
+                        
+                        # 检查是否是已签到的提示
+                        if 'already' in message.lower() or '已签' in message:
+                            await page.evaluate(f'''() => {{
+                                localStorage.setItem("{checkin_key}", "true");
+                            }}''')
+                            await context.close()
+                            await browser.close()
+                            send_tg(f"🟡 NodeLoc 今日已签到\n{now}")
+                            return 0
+                        
+                        raise RuntimeError(message)
+                except json.JSONDecodeError:
+                    log(f"⚠️ 响应不是 JSON 格式: {checkin_response['body']}")
+                    raise RuntimeError("签到响应格式错误")
+            else:
+                status = checkin_response.get('status', 'unknown')
+                body = checkin_response.get('body', '')
+                raise RuntimeError(f"签到请求失败 (HTTP {status}): {body}")
 
-    # 4️⃣ UI 不成功 → 接口兜底
-    if not ui_success:
-        log("➡️ UI 未生效，切换接口签到")
-        api_checkin()
-
-    log("====== NodeLoc 自动签到结束 ======")
+    except Exception as e:
+        error_msg = str(e)
+        log(f"❌ 签到失败: {error_msg}")
+        send_tg(f"❌ NodeLoc 签到失败\n{now}\n{error_msg}")
+        
+        if browser:
+            try:
+                await browser.close()
+            except:
+                pass
+        
+        return 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    exit(asyncio.run(main()))
